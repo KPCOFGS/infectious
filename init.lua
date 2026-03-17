@@ -18,7 +18,7 @@ local ZOMBIE_JUMP_HEIGHT = 6
 local INFECTED_HP        = 25
 local INFECTED_DAMAGE    = 5
 local INFECTED_SPEED     = 5
-local INFECT_CHANCE      = 0.3
+local INFECT_CHANCE      = 1.0
 
 local SPAWN_CHANCE_NIGHT = 8000
 local SPAWN_MAX_LIGHT    = 7       -- only spawn where light level <= this
@@ -160,7 +160,7 @@ end
 local function try_infect(target)
     if not target or target:is_player() then return false end
     if is_zombie(target) then return false end
-    if math.random() > INFECT_CHANCE then return false end
+    -- 100% infection rate
 
     local ent = target:get_luaentity()
     if not ent then return false end
@@ -260,17 +260,6 @@ local function zombie_die(self)
             pos = pos, gain = 0.6, max_hear_distance = 20,
         }, true)
 
-        -- Drops
-        local drops = {"default:dirt"}
-        if math.random(1, 5) == 1 then
-            table.insert(drops, "default:steel_ingot")
-        end
-        if math.random(1, 20) == 1 then
-            table.insert(drops, "default:diamond")
-        end
-        for _, item in ipairs(drops) do
-            core.add_item(pos, item)
-        end
     end
     self.object:remove()
 end
