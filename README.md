@@ -10,7 +10,6 @@ Apocalyptic zombie mod for Luanti. Aggressive zombies roam the night, infect ani
 - **Zombies attack everything** — players (non-creative) and all non-zombie entities
 - **Night/dark spawning only** — zombies spawn naturally where light level is 7 or lower
 - **Sunlight immune** — once spawned, they don't burn in daylight
-- **Manual HP system** — proper death with blood splatter particles, no drops
 - **Spawn egg** for testing and creative use
 
 ## Zombie Stats
@@ -28,9 +27,6 @@ Cow, pig, sheep, chicken, wolf, fox, grizzly bear, horse, cat, turkey, reindeer,
 
 ```
 /giveme infectious:spawn_egg     -- get a spawn egg
-/time 0:00                       -- set midnight for spawning
-/set time_speed 0                -- freeze time at night
-/clearobjects                    -- remove all entities
 ```
 
 Creative mode players are ignored by zombies — useful for testing.
