@@ -10,6 +10,7 @@ Apocalyptic zombie mod for Luanti. Aggressive zombies roam the night, infect ani
 - **Zombies attack everything** — players (non-creative) and all non-zombie entities
 - **Night/dark spawning only** — zombies spawn naturally where light level is 7 or lower
 - **Sunlight immune** — once spawned, they don't burn in daylight
+- **Infection mechanic** — 30% chance on each hit to zombify the target mob, replacing it with a hostile infected version
 - **Spawn egg** for testing and creative use
 
 ## Zombie Stats
