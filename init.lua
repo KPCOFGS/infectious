@@ -128,36 +128,142 @@ local function find_target(self)
 end
 
 -- =============================================================================
--- Helper: movement with gravity and jumping
+-- Helper: check if a position is blocked (walkable node)
 -- =============================================================================
+
+local function is_blocked(pos)
+    local node = core.get_node(vector.round(pos))
+    local def = core.registered_nodes[node.name]
+    return def and def.walkable
+end
+
+-- =============================================================================
+-- Helper: find ground position (feet on solid, head in air)
+-- =============================================================================
+
+local function find_ground(pos)
+    local rpos = vector.round(pos)
+    -- Search down for solid ground
+    for dy = 0, -3, -1 do
+        local check = {x = rpos.x, y = rpos.y + dy, z = rpos.z}
+        if is_blocked(check) then
+            return {x = rpos.x, y = rpos.y + dy + 1, z = rpos.z}
+        end
+    end
+    return rpos
+end
+
+-- =============================================================================
+-- A* pathfinding with waypoint following
+-- =============================================================================
+
+local PATH_RECALC_INTERVAL = 2.0   -- recalculate path every 2 seconds
+local PATH_SEARCH_DIST     = 30    -- max pathfinding search distance
+local PATH_MAX_JUMP        = 2     -- can jump up 2 blocks
+local PATH_MAX_DROP        = 4     -- can drop 4 blocks
+local WAYPOINT_REACH_DIST  = 1.5   -- how close to get before next waypoint
 
 local function move_toward(self, target_pos, speed)
     local pos = self.object:get_pos()
     if not pos or not target_pos then return end
 
-    local dir = vector.direction(pos, target_pos)
+    local vel = self.object:get_velocity() or {x = 0, y = 0, z = 0}
+    local new_y = vel.y
+
+    -- Initialize path state
+    if not self._path then self._path = nil end
+    if not self._path_index then self._path_index = 1 end
+    if not self._path_timer then self._path_timer = 0 end
+    if not self._last_pos then self._last_pos = pos end
+    if not self._stuck_count then self._stuck_count = 0 end
+
+    -- Recalculate path periodically
+    self._path_timer = self._path_timer + 0.1
+    if self._path_timer >= PATH_RECALC_INTERVAL or not self._path then
+        self._path_timer = 0
+
+        local start_pos = find_ground(pos)
+        local end_pos = find_ground(target_pos)
+
+        local path = core.find_path(start_pos, end_pos,
+            PATH_SEARCH_DIST, PATH_MAX_JUMP, PATH_MAX_DROP, "A*_noprefetch")
+
+        if path and #path > 0 then
+            self._path = path
+            self._path_index = 1
+            self._stuck_count = 0
+        else
+            -- No path found: clear path, will use direct movement
+            self._path = nil
+        end
+    end
+
+    -- Stuck detection
+    local horiz_moved = math.abs(pos.x - self._last_pos.x) + math.abs(pos.z - self._last_pos.z)
+    if self._path_timer == 0 then  -- check every recalc cycle
+        if horiz_moved < 0.3 then
+            self._stuck_count = (self._stuck_count or 0) + 1
+            if self._stuck_count >= 3 then
+                -- Really stuck: force path recalc and try jumping
+                self._path = nil
+                self._stuck_count = 0
+                new_y = ZOMBIE_JUMP_HEIGHT
+            end
+        else
+            self._stuck_count = 0
+        end
+        self._last_pos = vector.new(pos)
+    end
+
+    -- Determine movement target: next waypoint or direct
+    local move_target
+    if self._path and self._path_index <= #self._path then
+        local wp = self._path[self._path_index]
+        local wp_dist = vector.distance(
+            {x = pos.x, y = 0, z = pos.z},
+            {x = wp.x, y = 0, z = wp.z}
+        )
+
+        if wp_dist < WAYPOINT_REACH_DIST then
+            -- Reached waypoint, advance to next
+            self._path_index = self._path_index + 1
+            if self._path_index > #self._path then
+                move_target = target_pos
+            else
+                move_target = self._path[self._path_index]
+            end
+        else
+            move_target = wp
+        end
+    else
+        -- No path: direct movement toward target
+        move_target = target_pos
+    end
+
+    local dir = vector.direction(pos, move_target)
     dir.y = 0
     if vector.length(dir) < 0.01 then return end
     dir = vector.normalize(dir)
 
+    -- Face movement direction
     local yaw = math.atan2(-dir.x, dir.z)
     self.object:set_yaw(yaw)
 
-    local vel = self.object:get_velocity() or {x = 0, y = 0, z = 0}
-
-    -- Check if blocked ahead
-    local front = vector.add(pos, vector.multiply(dir, 1.0))
-    local front_node = core.get_node(vector.round({x = front.x, y = pos.y, z = front.z}))
-    local front_def = core.registered_nodes[front_node.name]
-
-    local new_y = vel.y
-    if front_def and front_def.walkable then
-        local above = core.get_node(vector.round({x = front.x, y = pos.y + 1, z = front.z}))
-        local above_def = core.registered_nodes[above.name]
-        if above_def and not above_def.walkable then
+    -- Jump if blocked ahead
+    local front_feet = {x = pos.x + dir.x, y = pos.y, z = pos.z + dir.z}
+    if is_blocked(front_feet) then
+        local front_head = {x = pos.x + dir.x, y = pos.y + 1, z = pos.z + dir.z}
+        if not is_blocked(front_head) then
             if vel.y >= -0.5 and vel.y <= 0.5 then
                 new_y = ZOMBIE_JUMP_HEIGHT
             end
+        end
+    end
+
+    -- Jump up if waypoint is above
+    if move_target.y > pos.y + 0.5 then
+        if vel.y >= -0.5 and vel.y <= 0.5 then
+            new_y = ZOMBIE_JUMP_HEIGHT
         end
     end
 
