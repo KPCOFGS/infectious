@@ -20,7 +20,7 @@ local INFECTED_DAMAGE    = 5
 local INFECTED_SPEED     = 5
 local INFECT_CHANCE      = 0.3
 
-local SPAWN_CHANCE_NIGHT = 8000
+local SPAWN_CHANCE_NIGHT = 500
 local SPAWN_MAX_LIGHT    = 7       -- only spawn where light level <= this
 
 local ZOMBIE_TAG = "infectious:aggressive"
@@ -547,49 +547,95 @@ core.register_craftitem("infectious:spawn_egg", {
 })
 
 -- =============================================================================
--- Natural spawning
+-- Natural spawning (Minecraft-style: player-centric, pack spawning)
 -- =============================================================================
 
-core.register_abm({
-    label = "Zombie spawning",
-    nodenames = {"group:soil", "group:stone", "group:sand"},
-    neighbors = {"air"},
-    interval = 30,
-    chance = SPAWN_CHANCE_NIGHT,
-    catch_up = false,
+local SPAWN_INTERVAL     = 5        -- try spawning every 5 seconds
+local SPAWN_MIN_DIST     = 20       -- minimum distance from player
+local SPAWN_MAX_DIST     = 60       -- maximum distance from player
+local SPAWN_ATTEMPTS     = 8        -- random positions to try per player
+local SPAWN_PACK_MIN     = 1        -- minimum pack size
+local SPAWN_PACK_MAX     = 3        -- maximum pack size
+local SPAWN_MOB_CAP      = 10       -- max zombies within 50 blocks of player
 
-    action = function(pos, node)
-        local above1 = {x = pos.x, y = pos.y + 1, z = pos.z}
-        local above2 = {x = pos.x, y = pos.y + 2, z = pos.z}
-        if core.get_node(above1).name ~= "air" then return end
-        if core.get_node(above2).name ~= "air" then return end
+local spawn_timer = 0
 
-        -- Only spawn in darkness (night, caves, shadows)
-        local light = core.get_node_light(above1)
-        if not light or light > SPAWN_MAX_LIGHT then return end
+core.register_globalstep(function(dtime)
+    spawn_timer = spawn_timer + dtime
+    if spawn_timer < SPAWN_INTERVAL then return end
+    spawn_timer = 0
 
-        -- Cap per area
-        local nearby = core.get_objects_inside_radius(above1, 20)
+    for _, player in ipairs(core.get_connected_players()) do
+        local ppos = player:get_pos()
+        if not ppos then goto continue end
+
+        -- Check mob cap around player
+        local nearby = core.get_objects_inside_radius(ppos, 50)
         local zombie_count = 0
         for _, obj in ipairs(nearby) do
             if is_zombie(obj) then
                 zombie_count = zombie_count + 1
             end
         end
-        if zombie_count >= 5 then return end
+        if zombie_count >= SPAWN_MOB_CAP then goto continue end
 
-        -- Not too close to player
-        for _, player in ipairs(core.get_connected_players()) do
-            if vector.distance(above1, player:get_pos()) < 10 then
-                return
+        -- Try random positions around the player
+        for _ = 1, SPAWN_ATTEMPTS do
+            -- Pick random angle and distance
+            local angle = math.random() * math.pi * 2
+            local dist = SPAWN_MIN_DIST + math.random() * (SPAWN_MAX_DIST - SPAWN_MIN_DIST)
+            local try_pos = {
+                x = math.floor(ppos.x + math.cos(angle) * dist),
+                y = math.floor(ppos.y),
+                z = math.floor(ppos.z + math.sin(angle) * dist),
+            }
+
+            -- Search vertically for a valid surface (up and down from player Y)
+            local spawn_pos = nil
+            for dy = -10, 10 do
+                local ground = {x = try_pos.x, y = try_pos.y + dy, z = try_pos.z}
+                local ground_node = core.get_node(ground)
+                local ground_def = core.registered_nodes[ground_node.name]
+
+                if ground_def and ground_def.walkable then
+                    local above1 = {x = ground.x, y = ground.y + 1, z = ground.z}
+                    local above2 = {x = ground.x, y = ground.y + 2, z = ground.z}
+
+                    if core.get_node(above1).name == "air"
+                            and core.get_node(above2).name == "air" then
+                        -- Check light
+                        local light = core.get_node_light(above1)
+                        if light and light <= SPAWN_MAX_LIGHT then
+                            spawn_pos = above1
+                            break
+                        end
+                    end
+                end
+            end
+
+            if spawn_pos then
+                -- Spawn a pack
+                local pack_size = math.random(SPAWN_PACK_MIN, SPAWN_PACK_MAX)
+                for i = 1, pack_size do
+                    if zombie_count >= SPAWN_MOB_CAP then break end
+
+                    local offset = {
+                        x = spawn_pos.x + math.random(-2, 2),
+                        y = spawn_pos.y,
+                        z = spawn_pos.z + math.random(-2, 2),
+                    }
+                    local obj = core.add_entity(offset, "infectious:zombie")
+                    if obj then
+                        obj:set_yaw(math.random() * math.pi * 2)
+                        zombie_count = zombie_count + 1
+                    end
+                end
+                break  -- one successful pack per player per cycle
             end
         end
 
-        local obj = core.add_entity(above1, "infectious:zombie")
-        if obj then
-            obj:set_yaw(math.random() * math.pi * 2)
-        end
-    end,
-})
+        ::continue::
+    end
+end)
 
 core.log("action", "[infectious] Loaded!")
