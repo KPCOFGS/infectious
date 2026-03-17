@@ -18,7 +18,7 @@ local ZOMBIE_JUMP_HEIGHT = 6
 local INFECTED_HP        = 25
 local INFECTED_DAMAGE    = 5
 local INFECTED_SPEED     = 5
-local INFECT_CHANCE      = 1.0
+local INFECT_CHANCE      = 0.3
 
 local SPAWN_CHANCE_NIGHT = 8000
 local SPAWN_MAX_LIGHT    = 7       -- only spawn where light level <= this
@@ -160,7 +160,7 @@ end
 local function try_infect(target)
     if not target or target:is_player() then return false end
     if is_zombie(target) then return false end
-    -- 100% infection rate
+    if math.random() > INFECT_CHANCE then return false end
 
     local ent = target:get_luaentity()
     if not ent then return false end
