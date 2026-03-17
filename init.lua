@@ -25,6 +25,21 @@ local SPAWN_MAX_LIGHT    = 7       -- only spawn where light level <= this
 
 local ZOMBIE_TAG = "infectious:aggressive"
 
+-- Bloodmoon integration: check for multipliers
+local function get_damage_mult()
+    if bloodmoon and bloodmoon.is_active and bloodmoon.is_active() then
+        return bloodmoon.get_damage_mult()
+    end
+    return 1.0
+end
+
+local function get_speed_mult()
+    if bloodmoon and bloodmoon.is_active and bloodmoon.is_active() then
+        return bloodmoon.get_speed_mult()
+    end
+    return 1.0
+end
+
 -- Model info
 local MODEL = "character.b3d"
 local ANIM_STAND     = {x = 0, y = 79}
@@ -264,7 +279,9 @@ local function zombie_die(self)
     self.object:remove()
 end
 
-local function zombie_ai_step(self, dtime, damage, speed)
+local function zombie_ai_step(self, dtime, base_damage, base_speed)
+    local damage = base_damage * get_damage_mult()
+    local speed = base_speed * get_speed_mult()
     local pos = self.object:get_pos()
     if not pos then return end
 
@@ -562,7 +579,12 @@ local spawn_timer = 0
 
 core.register_globalstep(function(dtime)
     spawn_timer = spawn_timer + dtime
-    if spawn_timer < SPAWN_INTERVAL then return end
+    -- Blood moon: spawn twice as fast
+    local interval = SPAWN_INTERVAL
+    if bloodmoon and bloodmoon.is_active and bloodmoon.is_active() then
+        interval = interval / 2
+    end
+    if spawn_timer < interval then return end
     spawn_timer = 0
 
     for _, player in ipairs(core.get_connected_players()) do
@@ -615,7 +637,11 @@ core.register_globalstep(function(dtime)
 
             if spawn_pos then
                 -- Spawn a pack
-                local pack_size = math.random(SPAWN_PACK_MIN, SPAWN_PACK_MAX)
+                local pack_max = SPAWN_PACK_MAX
+                if bloodmoon and bloodmoon.is_active and bloodmoon.is_active() then
+                    pack_max = pack_max * 2
+                end
+                local pack_size = math.random(SPAWN_PACK_MIN, pack_max)
                 for i = 1, pack_size do
                     if zombie_count >= SPAWN_MOB_CAP then break end
 
