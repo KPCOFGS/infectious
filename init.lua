@@ -21,6 +21,115 @@ local INFECTED_SPEED     = 5
 local INFECT_CHANCE      = 0.3
 
 local SPAWN_CHANCE_NIGHT = 500
+
+-- =============================================================================
+-- Void Reaper stacking wither system
+-- =============================================================================
+
+local VOID_WITHER_DURATION   = 10    -- each application lasts 10 seconds
+local VOID_WITHER_TICK       = 0.5   -- damage every 0.5 seconds
+local VOID_WITHER_BASE_DMG   = 2     -- damage per stack per tick
+local VOID_WITHER_MAX_STACKS = 10
+local VOID_WITHER_RESET_TIME = 3     -- stacks reset after 3s of no new hits
+
+local void_wither_targets = {}  -- key -> {target, stacks, timer, remaining, last_hit}
+
+local function apply_void_wither(target)
+    if not target or not target:get_pos() then return end
+    local key = tostring(target)
+    local existing = void_wither_targets[key]
+    local stacks
+    if existing then
+        existing.stacks = math.min(existing.stacks + 1, VOID_WITHER_MAX_STACKS)
+        existing.remaining = VOID_WITHER_DURATION
+        existing.last_hit = 0
+        stacks = existing.stacks
+    else
+        void_wither_targets[key] = {
+            target = target,
+            stacks = 1,
+            timer = 0,
+            remaining = VOID_WITHER_DURATION,
+            last_hit = 0,
+        }
+        stacks = 1
+    end
+
+    -- Wither particles on application (scales with stacks)
+    local pos = target:get_pos()
+    if pos then
+        core.add_particlespawner({
+            amount = 5 + stacks * 2,
+            time = 0.3,
+            minpos = vector.subtract(pos, 0.4),
+            maxpos = vector.add(pos, {x = 0.4, y = 1.5, z = 0.4}),
+            minvel = {x = -0.5, y = 0.5, z = -0.5},
+            maxvel = {x = 0.5, y = 1.5, z = 0.5},
+            minacc = {x = 0, y = 0.2, z = 0},
+            maxacc = {x = 0, y = 0.5, z = 0},
+            minexptime = 0.4, maxexptime = 1.0,
+            minsize = 1, maxsize = 2,
+            texture = "default_dirt.png^[colorize:#6020A0FF",
+            glow = 8,
+        })
+    end
+end
+
+-- Process void wither in globalstep (added to spawner globalstep later would be messy,
+-- so register a separate one)
+core.register_globalstep(function(dtime)
+    for key, vw in pairs(void_wither_targets) do
+        local obj = vw.target
+        if not obj or not obj:get_pos() then
+            void_wither_targets[key] = nil
+        else
+            vw.timer = vw.timer + dtime
+            vw.remaining = vw.remaining - dtime
+            vw.last_hit = vw.last_hit + dtime
+
+            -- Reset stacks if no new hit for 3 seconds
+            if vw.last_hit >= VOID_WITHER_RESET_TIME then
+                vw.stacks = 0
+            end
+
+            if vw.remaining <= 0 or vw.stacks <= 0 then
+                void_wither_targets[key] = nil
+            else
+                -- Higher stacks = faster ticks (0.5s at 1 stack, 0.05s at 10 stacks)
+                local tick_rate = VOID_WITHER_TICK / vw.stacks
+            if vw.timer >= tick_rate then
+                vw.timer = 0
+                local dmg = VOID_WITHER_BASE_DMG * vw.stacks
+                -- True damage: bypass armor
+                local ent = not obj:is_player() and obj:get_luaentity() or nil
+                if ent and ent._hp then
+                    ent._hp = ent._hp - dmg
+                elseif obj:is_player() then
+                    local hp = obj:get_hp()
+                    if hp and hp > 0 then
+                        obj:set_hp(hp - dmg, {type = "set_hp", wither = true})
+                    end
+                end
+                -- Purple particles
+                local pos = obj:get_pos()
+                if pos then
+                    core.add_particlespawner({
+                        amount = 3 * vw.stacks, time = 0.3,
+                        minpos = vector.subtract(pos, 0.3),
+                        maxpos = vector.add(pos, {x = 0.3, y = 1.5, z = 0.3}),
+                        minvel = {x = -0.3, y = 0.3, z = -0.3},
+                        maxvel = {x = 0.3, y = 1.0, z = 0.3},
+                        minexptime = 0.3, maxexptime = 0.8,
+                        minsize = 1, maxsize = 2,
+                        texture = "default_dirt.png^[colorize:#6020A0FF",
+                        glow = 6,
+                    })
+                end
+            end
+            end
+        end
+    end
+end)
 local SPAWN_MAX_LIGHT    = 7       -- only spawn where light level <= this
 
 local ZOMBIE_TAG = "infectious:aggressive"
@@ -91,21 +200,17 @@ local function find_target(self)
     local pos = self.object:get_pos()
     if not pos then return nil end
 
-    local blacklist = self._blacklist or {}
     local best_target = nil
     local best_dist = ZOMBIE_RANGE
 
     for _, player in ipairs(core.get_connected_players()) do
         if not core.is_creative_enabled(player:get_player_name()) then
-            local key = player:get_player_name()
-            if not blacklist[key] then
-                local ppos = player:get_pos()
-                if ppos then
-                    local dist = vector.distance(pos, ppos)
-                    if dist < best_dist then
-                        best_dist = dist
-                        best_target = player
-                    end
+            local ppos = player:get_pos()
+            if ppos then
+                local dist = vector.distance(pos, ppos)
+                if dist < best_dist then
+                    best_dist = dist
+                    best_target = player
                 end
             end
         end
@@ -116,15 +221,12 @@ local function find_target(self)
             local ent = obj:get_luaentity()
             if ent and ent.name ~= "__builtin:item"
                     and ent.name ~= "__builtin:falling_node" then
-                local key = tostring(obj)
-                if not blacklist[key] then
-                    local opos = obj:get_pos()
-                    if opos then
-                        local dist = vector.distance(pos, opos)
-                        if dist < best_dist then
-                            best_dist = dist
-                            best_target = obj
-                        end
+                local opos = obj:get_pos()
+                if opos then
+                    local dist = vector.distance(pos, opos)
+                    if dist < best_dist then
+                        best_dist = dist
+                        best_target = obj
                     end
                 end
             end
@@ -145,30 +247,8 @@ local function is_blocked(pos)
 end
 
 -- =============================================================================
--- Helper: find ground position (feet on solid, head in air)
+-- Movement: direct chase with spread offset and obstacle jumping
 -- =============================================================================
-
-local function find_ground(pos)
-    local rpos = vector.round(pos)
-    -- Search down for solid ground
-    for dy = 0, -3, -1 do
-        local check = {x = rpos.x, y = rpos.y + dy, z = rpos.z}
-        if is_blocked(check) then
-            return {x = rpos.x, y = rpos.y + dy + 1, z = rpos.z}
-        end
-    end
-    return rpos
-end
-
--- =============================================================================
--- A* pathfinding with waypoint following
--- =============================================================================
-
-local PATH_RECALC_INTERVAL = 2.0   -- recalculate path every 2 seconds
-local PATH_SEARCH_DIST     = 30    -- max pathfinding search distance
-local PATH_MAX_JUMP        = 2     -- can jump up 2 blocks
-local PATH_MAX_DROP        = 4     -- can drop 4 blocks
-local WAYPOINT_REACH_DIST  = 1.5   -- how close to get before next waypoint
 
 local function move_toward(self, target_pos, speed)
     local pos = self.object:get_pos()
@@ -177,100 +257,24 @@ local function move_toward(self, target_pos, speed)
     local vel = self.object:get_velocity() or {x = 0, y = 0, z = 0}
     local new_y = vel.y
 
-    -- Initialize path state
-    if not self._path then self._path = nil end
-    if not self._path_index then self._path_index = 1 end
-    if not self._path_timer then self._path_timer = 0 end
-    if not self._last_pos then self._last_pos = pos end
-    if not self._stuck_count then self._stuck_count = 0 end
-
-    -- Recalculate path periodically
-    self._path_timer = self._path_timer + 0.1
-    if self._path_timer >= PATH_RECALC_INTERVAL or not self._path then
-        self._path_timer = 0
-
-        local start_pos = find_ground(pos)
-        local end_pos = find_ground(target_pos)
-
-        local path = core.find_path(start_pos, end_pos,
-            PATH_SEARCH_DIST, PATH_MAX_JUMP, PATH_MAX_DROP, "A*_noprefetch")
-
-        if path and #path > 0 then
-            self._path = path
-            self._path_index = 1
-            self._stuck_count = 0
-            self._nopath_count = 0
-        else
-            -- No path found
-            self._path = nil
-            self._nopath_count = (self._nopath_count or 0) + 1
-
-            -- After 5 failed path attempts, blacklist current target for 30 seconds
-            if self._nopath_count >= 5 and self._target then
-                local key
-                if self._target:is_player() then
-                    key = self._target:get_player_name()
-                else
-                    key = tostring(self._target)
-                end
-                if self._blacklist then
-                    self._blacklist[key] = core.get_gametime() + 10
-                end
-                self._target = nil
-                self._nopath_count = 0
-            end
-        end
+    -- Each mob gets a unique spread offset so they don't all line up
+    if not self._spread_offset then
+        self._spread_offset = {
+            x = (math.random() - 0.5) * 4,
+            z = (math.random() - 0.5) * 4,
+        }
     end
 
-    -- Stuck detection
-    local horiz_moved = math.abs(pos.x - self._last_pos.x) + math.abs(pos.z - self._last_pos.z)
-    if self._path_timer == 0 then  -- check every recalc cycle
-        if horiz_moved < 0.3 then
-            self._stuck_count = (self._stuck_count or 0) + 1
-            if self._stuck_count >= 3 then
-                -- Really stuck: blacklist target and move on
-                if self._target and self._blacklist then
-                    local key
-                    if self._target:is_player() then
-                        key = self._target:get_player_name()
-                    else
-                        key = tostring(self._target)
-                    end
-                    self._blacklist[key] = core.get_gametime() + 10
-                    self._target = nil
-                end
-                self._path = nil
-                self._stuck_count = 0
-                new_y = ZOMBIE_JUMP_HEIGHT
-            end
-        else
-            self._stuck_count = 0
-        end
-        self._last_pos = vector.new(pos)
-    end
-
-    -- Determine movement target: next waypoint or direct
+    -- Apply spread when far, go direct when close
+    local dist_to_target = vector.distance(pos, target_pos)
     local move_target
-    if self._path and self._path_index <= #self._path then
-        local wp = self._path[self._path_index]
-        local wp_dist = vector.distance(
-            {x = pos.x, y = 0, z = pos.z},
-            {x = wp.x, y = 0, z = wp.z}
-        )
-
-        if wp_dist < WAYPOINT_REACH_DIST then
-            -- Reached waypoint, advance to next
-            self._path_index = self._path_index + 1
-            if self._path_index > #self._path then
-                move_target = target_pos
-            else
-                move_target = self._path[self._path_index]
-            end
-        else
-            move_target = wp
-        end
+    if dist_to_target > ZOMBIE_ATTACK_DIST + 2 then
+        move_target = {
+            x = target_pos.x + self._spread_offset.x,
+            y = target_pos.y,
+            z = target_pos.z + self._spread_offset.z,
+        }
     else
-        -- No path: direct movement toward target
         move_target = target_pos
     end
 
@@ -280,8 +284,7 @@ local function move_toward(self, target_pos, speed)
     dir = vector.normalize(dir)
 
     -- Face movement direction
-    local yaw = math.atan2(-dir.x, dir.z)
-    self.object:set_yaw(yaw)
+    self.object:set_yaw(math.atan2(-dir.x, dir.z))
 
     -- Jump if blocked ahead
     local front_feet = {x = pos.x + dir.x, y = pos.y, z = pos.z + dir.z}
@@ -291,13 +294,6 @@ local function move_toward(self, target_pos, speed)
             if vel.y >= -0.5 and vel.y <= 0.5 then
                 new_y = ZOMBIE_JUMP_HEIGHT
             end
-        end
-    end
-
-    -- Jump up if waypoint is above
-    if move_target.y > pos.y + 0.5 then
-        if vel.y >= -0.5 and vel.y <= 0.5 then
-            new_y = ZOMBIE_JUMP_HEIGHT
         end
     end
 
@@ -319,6 +315,9 @@ local function try_infect(target)
 
     local ent = target:get_luaentity()
     if not ent then return false end
+
+    -- Infected brutes can't be re-infected
+    if ent.name == "infectious:infected_brute" then return false end
 
     local pos = target:get_pos()
     if not pos then return false end
@@ -358,7 +357,6 @@ end
 -- Chunk-based mob cap: max zombies per 16x16x16 mapblock
 -- =============================================================================
 
-local CHUNK_MOB_CAP = 8
 local all_zombies = {}
 
 local function register_zombie(self)
@@ -435,56 +433,6 @@ local function zombie_die(self)
     self.object:remove()
 end
 
-local function pos_to_chunk(pos)
-    return math.floor(pos.x / 16) .. ":" ..
-           math.floor(pos.y / 16) .. ":" ..
-           math.floor(pos.z / 16)
-end
-
-local cull_timer = 0
-core.register_globalstep(function(dtime)
-    cull_timer = cull_timer + dtime
-    if cull_timer < 10 then return end
-    cull_timer = 0
-
-    -- Clean dead refs
-    for key, z in pairs(all_zombies) do
-        if not z.object or not z.object:get_pos() then
-            all_zombies[key] = nil
-        end
-    end
-
-    -- Group zombies by chunk
-    local chunks = {}
-    for key, z in pairs(all_zombies) do
-        local zpos = z.object:get_pos()
-        if zpos then
-            local chunk = pos_to_chunk(zpos)
-            if not chunks[chunk] then chunks[chunk] = {} end
-            table.insert(chunks[chunk], {key = key, zombie = z})
-        end
-    end
-
-    -- Cull randomly in overpopulated chunks
-    for chunk, list in pairs(chunks) do
-        if #list > CHUNK_MOB_CAP then
-            -- Shuffle the list
-            for i = #list, 2, -1 do
-                local j = math.random(1, i)
-                list[i], list[j] = list[j], list[i]
-            end
-            -- Remove excess
-            for i = CHUNK_MOB_CAP + 1, #list do
-                local entry = list[i]
-                if entry.zombie.object and entry.zombie.object:get_pos() then
-                    entry.zombie.object:remove()
-                    all_zombies[entry.key] = nil
-                end
-            end
-        end
-    end
-end)
-
 -- =============================================================================
 
 local function zombie_ai_step(self, dtime, base_damage, base_speed)
@@ -541,22 +489,20 @@ local function zombie_ai_step(self, dtime, base_damage, base_speed)
         end
     end
 
-    -- Blacklist tracking: targets we can't reach
-    if not self._blacklist then self._blacklist = {} end
-    if not self._nopath_count then self._nopath_count = 0 end
-
-    -- Retarget
+    -- Retarget: only search for new target if current one is gone
     self._retarget_timer = (self._retarget_timer or 0) + dtime
     if self._retarget_timer >= 1.0 then
         self._retarget_timer = 0
-        self._target = find_target(self)
-    end
-
-    -- Clean expired blacklist entries
-    local now = core.get_gametime()
-    for key, expire_time in pairs(self._blacklist) do
-        if now > expire_time then
-            self._blacklist[key] = nil
+        local target = self._target
+        if not target or not target:get_pos() then
+            -- Target gone, find a new one
+            self._target = find_target(self)
+        else
+            -- Check if target moved out of range
+            local dist = vector.distance(pos, target:get_pos())
+            if dist > ZOMBIE_RANGE * 1.5 then
+                self._target = find_target(self)
+            end
         end
     end
 
@@ -571,16 +517,23 @@ local function zombie_ai_step(self, dtime, base_damage, base_speed)
 
     local target = self._target
     if not target then
-        self.object:set_velocity({x = 0, y = self.object:get_velocity().y, z = 0})
+        local cur_vel = self.object:get_velocity()
+        self.object:set_velocity({x = 0, y = cur_vel and cur_vel.y or 0, z = 0})
         if self._set_anim then self:_set_anim("stand") end
         return
     end
 
     local tpos = target:get_pos()
-    if not tpos then self._target = nil; return end
-
-    local thp = target:get_hp()
-    if not thp or thp <= 0 then self._target = nil; return end
+    if not tpos then
+        -- Don't clear immediately, wait a few frames in case it's a Creatura glitch
+        self._target_lost_frames = (self._target_lost_frames or 0) + 1
+        if self._target_lost_frames > 10 then
+            self._target = nil
+            self._target_lost_frames = 0
+        end
+        return
+    end
+    self._target_lost_frames = 0
 
     local dist = vector.distance(pos, tpos)
     if dist > ZOMBIE_RANGE * 1.5 then self._target = nil; return end
@@ -592,22 +545,27 @@ local function zombie_ai_step(self, dtime, base_damage, base_speed)
         if self._attack_timer >= 0.8 then
             self._attack_timer = 0
 
+            -- Punch with direction so target gets knocked back
+            local attack_dir = vector.direction(pos, tpos)
+            attack_dir.y = 0.3
             target:punch(self.object, 1.0, {
                 full_punch_interval = 1.0,
                 damage_groups = {fleshy = damage},
-            }, vector.direction(pos, tpos))
-
-            local kb_dir = vector.direction(pos, tpos)
-            kb_dir.y = 0.3
-            local tvel = target:get_velocity()
-            if tvel then
-                target:set_velocity(vector.add(tvel,
-                    vector.multiply(kb_dir, ZOMBIE_KNOCKBACK)))
-            end
+            }, attack_dir)
 
             if not target:is_player() then
                 try_infect(target)
             end
+
+            -- Cancel any knockback applied to US (not the target)
+            core.after(0.05, function()
+                if self.object and self.object:get_pos() then
+                    local v = self.object:get_velocity()
+                    if v then
+                        self.object:set_velocity({x = 0, y = v.y, z = 0})
+                    end
+                end
+            end)
         end
         local dir = vector.direction(pos, tpos)
         self.object:set_yaw(math.atan2(-dir.x, dir.z))
@@ -801,6 +759,764 @@ for _, mob in ipairs(ANIMALIA_MOBS) do
 end
 
 -- =============================================================================
+-- Brute Mace (dropped weapon)
+-- =============================================================================
+
+core.register_tool("infectious:brute_mace", {
+    description = S("Brute Mace"),
+    inventory_image = "infectious_brute_mace.png",
+    wield_image = "infectious_brute_mace.png",
+    wield_scale = {x = 2.5, y = 2.5, z = 2},
+
+    tool_capabilities = {
+        full_punch_interval = 1.5,
+        max_drop_level = 1,
+        groupcaps = {
+            cracky = {
+                times = {[3] = 2.0},
+                uses = 150,
+                maxlevel = 0,
+            },
+        },
+        damage_groups = {fleshy = 10},
+    },
+
+    groups = {weapon = 1},
+
+    -- Area damage on hit: damages all entities within 3 blocks of target
+    on_use = function(itemstack, user, pointed_thing)
+        if pointed_thing.type == "object" then
+            local target = pointed_thing.ref
+            if target and target ~= user then
+                local tpos = target:get_pos()
+                if tpos then
+                    local upos = user:get_pos()
+                    -- Hit everything nearby (area damage, no knockback)
+                    for _, obj in ipairs(core.get_objects_inside_radius(tpos, 3)) do
+                        if obj ~= user then
+                            local opos = obj:get_pos()
+                            if opos then
+                                obj:punch(user, 1.0, itemstack:get_tool_capabilities(), nil)
+                            end
+                        end
+                    end
+                    -- Slam particles
+                    core.add_particlespawner({
+                        amount = 10,
+                        time = 0.2,
+                        minpos = vector.subtract(tpos, {x = 2, y = 0, z = 2}),
+                        maxpos = vector.add(tpos, {x = 2, y = 0.5, z = 2}),
+                        minvel = {x = -2, y = 1, z = -2},
+                        maxvel = {x = 2, y = 3, z = 2},
+                        minacc = {x = 0, y = -9, z = 0},
+                        maxacc = {x = 0, y = -5, z = 0},
+                        minexptime = 0.3,
+                        maxexptime = 0.6,
+                        minsize = 0.5,
+                        maxsize = 1.0,
+                        texture = "default_dirt.png",
+                        glow = 0,
+                    })
+                end
+                itemstack:add_wear(65535 / 150)
+                return itemstack
+            end
+        end
+    end,
+})
+
+-- =============================================================================
+-- Brute entity - NOT a zombie, can be attacked by infectious mobs
+-- =============================================================================
+
+local BRUTE_HP          = 80
+local BRUTE_DAMAGE      = 12
+local BRUTE_SPEED       = 2.0
+local BRUTE_RANGE       = 40
+local BRUTE_ATTACK_DIST = 3.0
+local BRUTE_KNOCKBACK   = 12
+
+core.register_entity("infectious:brute", {
+    initial_properties = {
+        physical = true,
+        collide_with_objects = true,
+        collisionbox = {-0.5, 0, -0.5, 0.5, 2.7, 0.5},
+        selectionbox = {-0.5, 0, -0.5, 0.5, 2.7, 0.5},
+        visual = "mesh",
+        mesh = "character.b3d",
+        visual_size = {x = 1.5, y = 1.5, z = 1.5},
+        textures = {"infectious_brute.png"},
+        makes_footstep_sound = true,
+        glow = 2,
+        stepheight = 1.1,
+    },
+
+    -- NOT zombie tagged: infectious mobs will attack it
+    _hp = BRUTE_HP,
+    _target = nil,
+    _attack_timer = 0,
+    _retarget_timer = 0,
+    _sound_timer = 0,
+    _anim = "",
+
+    on_activate = function(self, staticdata)
+        self.object:set_acceleration({x = 0, y = -9.81, z = 0})
+        self.object:set_armor_groups({fleshy = 0, immortal = 1})
+        register_zombie(self)
+        self._hp = BRUTE_HP
+        if staticdata and staticdata ~= "" then
+            local data = core.deserialize(staticdata)
+            if data and data.hp then
+                self._hp = data.hp
+            end
+        end
+    end,
+
+    on_step = function(self, dtime)
+        local pos = self.object:get_pos()
+        if not pos then return end
+
+        if (self._hp or 1) <= 0 then
+            self:_die()
+            return
+        end
+
+        -- Despawn if far from players
+        if not self._despawn_timer then self._despawn_timer = 0 end
+        self._despawn_timer = self._despawn_timer + dtime
+        if self._despawn_timer >= 5.0 then
+            self._despawn_timer = 0
+            local nearest = 999
+            for _, player in ipairs(core.get_connected_players()) do
+                local ppos = player:get_pos()
+                if ppos then
+                    local d = vector.distance(pos, ppos)
+                    if d < nearest then nearest = d end
+                end
+            end
+            if nearest > 120 then
+                unregister_zombie(self)
+                self.object:remove()
+                return
+            end
+        end
+
+        -- Ground stomp particles (every step)
+        if not self._step_timer then self._step_timer = 0 end
+        self._step_timer = self._step_timer + dtime
+        local vel = self.object:get_velocity()
+        if vel and self._step_timer >= 0.4 then
+            local hspeed = math.sqrt(vel.x * vel.x + vel.z * vel.z)
+            if hspeed > 0.5 then
+                self._step_timer = 0
+                core.add_particlespawner({
+                    amount = 4,
+                    time = 0.2,
+                    minpos = vector.subtract(pos, {x = 0.3, y = 0, z = 0.3}),
+                    maxpos = vector.add(pos, {x = 0.3, y = 0.2, z = 0.3}),
+                    minvel = {x = -0.5, y = 0.3, z = -0.5},
+                    maxvel = {x = 0.5, y = 0.8, z = 0.5},
+                    minexptime = 0.3,
+                    maxexptime = 0.6,
+                    minsize = 0.5,
+                    maxsize = 1.0,
+                    texture = "default_dirt.png",
+                    glow = 0,
+                })
+            end
+        end
+
+        -- Sounds (heavy footsteps)
+        self._sound_timer = (self._sound_timer or 0) + dtime
+        if self._sound_timer >= 3 + math.random() * 3 then
+            self._sound_timer = 0
+            core.sound_play("default_dig_cracky", {
+                pos = pos, gain = 0.5, max_hear_distance = 24,
+            }, true)
+        end
+
+        -- Retarget: prefer players, but fight back against attackers
+        self._retarget_timer = (self._retarget_timer or 0) + dtime
+        if self._retarget_timer >= 1.5 then
+            self._retarget_timer = 0
+            -- If we have an attacker, keep targeting them
+            if not self._target or not self._target:get_pos() then
+                self._target = nil
+                -- Find nearest player (non-creative)
+                local best = nil
+                local best_dist = BRUTE_RANGE
+                for _, player in ipairs(core.get_connected_players()) do
+                    if not core.is_creative_enabled(player:get_player_name()) then
+                        local ppos = player:get_pos()
+                        if ppos then
+                            local d = vector.distance(pos, ppos)
+                            if d < best_dist then
+                                best_dist = d
+                                best = player
+                            end
+                        end
+                    end
+                end
+                self._target = best
+            end
+        end
+
+        local target = self._target
+        if not target then
+            -- Random roaming
+            if not self._roam_timer then self._roam_timer = 0 end
+            if not self._roam_dir then self._roam_dir = nil end
+            self._roam_timer = self._roam_timer + dtime
+
+            if self._roam_timer >= 3 + math.random() * 4 then
+                self._roam_timer = 0
+                -- Pick a new random direction or stop
+                if math.random(1, 3) == 1 then
+                    -- Pause briefly
+                    self._roam_dir = nil
+                else
+                    local angle = math.random() * math.pi * 2
+                    self._roam_dir = {
+                        x = math.cos(angle),
+                        y = 0,
+                        z = math.sin(angle),
+                    }
+                end
+            end
+
+            if self._roam_dir then
+                self:_set_anim("walk")
+                local vy = vel and vel.y or 0
+                self.object:set_velocity({
+                    x = self._roam_dir.x * BRUTE_SPEED * 0.5,
+                    y = vy,
+                    z = self._roam_dir.z * BRUTE_SPEED * 0.5,
+                })
+                self.object:set_yaw(math.atan2(-self._roam_dir.x, self._roam_dir.z))
+            else
+                self.object:set_velocity({x = 0, y = vel and vel.y or 0, z = 0})
+                self:_set_anim("stand")
+            end
+            return
+        end
+
+        local tpos = target:get_pos()
+        if not tpos then self._target = nil; return end
+
+        local thp = target:get_hp()
+        if thp and thp <= 0 then self._target = nil; return end
+
+        local dist = vector.distance(pos, tpos)
+        if dist > BRUTE_RANGE * 1.5 then self._target = nil; return end
+
+        self._attack_timer = (self._attack_timer or 0) + dtime
+
+        if dist <= BRUTE_ATTACK_DIST then
+            -- Keep walking animation (arms swinging) while in melee
+            self:_set_anim("walk")
+
+            -- Face target
+            local dir = vector.direction(pos, tpos)
+            self.object:set_yaw(math.atan2(-dir.x, dir.z))
+
+            if self._attack_timer >= 1.5 then
+                self._attack_timer = 0
+
+                -- AREA DAMAGE: hit everything within 4 blocks
+                local aoe_radius = 4
+                for _, obj in ipairs(core.get_objects_inside_radius(pos, aoe_radius)) do
+                    if obj ~= self.object then
+                        local opos = obj:get_pos()
+                        if opos then
+                            local kb = vector.direction(pos, opos)
+                            kb.y = 0.3
+                            obj:punch(self.object, 1.0, {
+                                full_punch_interval = 1.5,
+                                damage_groups = {fleshy = BRUTE_DAMAGE},
+                            }, kb)
+                        end
+                    end
+                end
+
+                -- Ground slam particles
+                core.add_particlespawner({
+                    amount = 20,
+                    time = 0.2,
+                    minpos = vector.subtract(pos, {x = aoe_radius, y = 0, z = aoe_radius}),
+                    maxpos = vector.add(pos, {x = aoe_radius, y = 0.5, z = aoe_radius}),
+                    minvel = {x = -2, y = 1, z = -2},
+                    maxvel = {x = 2, y = 3, z = 2},
+                    minacc = {x = 0, y = -9, z = 0},
+                    maxacc = {x = 0, y = -5, z = 0},
+                    minexptime = 0.3,
+                    maxexptime = 0.8,
+                    minsize = 0.5,
+                    maxsize = 1.5,
+                    texture = "default_dirt.png",
+                    glow = 0,
+                })
+
+                core.sound_play("default_dig_cracky", {
+                    pos = pos, gain = 1.0, max_hear_distance = 30,
+                }, true)
+            end
+        else
+            self:_set_anim("walk")
+            move_toward(self, tpos, BRUTE_SPEED)
+        end
+    end,
+
+    on_punch = function(self, puncher, time_from_last_punch, tool_capabilities, dir, damage)
+        -- Fight back against anyone who hits us
+        if puncher and puncher:get_pos() then
+            if puncher:is_player() then
+                if not core.is_creative_enabled(puncher:get_player_name()) then
+                    self._target = puncher
+                end
+            else
+                self._target = puncher
+            end
+        end
+
+        local dmg = 1
+        if tool_capabilities and tool_capabilities.damage_groups then
+            dmg = tool_capabilities.damage_groups.fleshy or 1
+        end
+        -- High armor: reduce damage by 40%
+        dmg = math.max(1, math.floor(dmg * 0.6))
+        self._hp = self._hp - dmg
+
+        self.object:set_texture_mod("^[colorize:#ff000040")
+
+        -- Cancel any knockback - brute doesn't flinch
+        core.after(0.05, function()
+            if self.object and self.object:get_pos() then
+                local v = self.object:get_velocity()
+                if v then
+                    self.object:set_velocity({x = 0, y = v.y, z = 0})
+                end
+            end
+        end)
+
+        if self._hp <= 0 then
+            self:_die()
+        else
+            core.after(0.15, function()
+                if self.object and self.object:get_pos() then
+                    self.object:set_texture_mod("")
+                end
+            end)
+        end
+    end,
+
+    _die = function(self)
+        local pos = self.object:get_pos()
+        if pos then
+            -- Big death explosion particles
+            core.add_particlespawner({
+                amount = 25,
+                time = 0.3,
+                minpos = vector.subtract(pos, 0.5),
+                maxpos = vector.add(pos, {x = 0.5, y = 2.5, z = 0.5}),
+                minvel = {x = -2, y = 1, z = -2},
+                maxvel = {x = 2, y = 4, z = 2},
+                minacc = {x = 0, y = -3, z = 0},
+                maxacc = {x = 0, y = -1, z = 0},
+                minexptime = 0.8,
+                maxexptime = 2.0,
+                minsize = 0.5,
+                maxsize = 1.5,
+                texture = "default_dirt.png^[colorize:#30251FFF",
+                glow = 2,
+            })
+
+            core.sound_play("default_break_glass", {
+                pos = pos, gain = 0.8, max_hear_distance = 30,
+            }, true)
+
+            -- Drops: rare mace, chance for armor
+            -- Always drop some iron
+            core.add_item(pos, "default:steel_ingot " .. math.random(1, 3))
+
+            -- 1 in 10: drop the brute mace
+            if math.random(1, 10) == 1 then
+                core.add_item(pos, "infectious:brute_mace")
+            end
+
+            -- 1 in 10: drop diamond
+            if math.random(1, 10) == 1 then
+                core.add_item(pos, "default:diamond " .. math.random(1, 2))
+            end
+        end
+        unregister_zombie(self)
+        self.object:remove()
+    end,
+
+    _set_anim = function(self, name)
+        if self._anim == name then return end
+        self._anim = name
+        if name == "stand" then
+            self.object:set_animation({x = 0, y = 79}, 10, 0, true)
+        elseif name == "walk" then
+            self.object:set_animation({x = 200, y = 219}, 15, 0, true)
+        end
+    end,
+
+    get_staticdata = function(self)
+        return core.serialize({hp = self._hp})
+    end,
+})
+
+-- =============================================================================
+-- Brute spawn egg
+-- =============================================================================
+
+local function spawn_brute_at(itemstack, user, pointed_thing)
+    if pointed_thing.type == "node" then
+        local pos = pointed_thing.above
+        pos.y = pos.y + 0.5
+        local obj = core.add_entity(pos, "infectious:brute")
+        if obj then
+            obj:set_yaw(math.random() * math.pi * 2)
+        end
+        if not core.is_creative_enabled(user:get_player_name()) then
+            itemstack:take_item()
+        end
+        return itemstack
+    end
+end
+
+core.register_craftitem("infectious:brute_spawn_egg", {
+    description = S("Brute Spawn Egg"),
+    inventory_image = "infectious_brute_egg.png",
+    on_use = spawn_brute_at,
+    on_place = spawn_brute_at,
+    on_secondary_use = spawn_brute_at,
+})
+
+-- =============================================================================
+-- Infected Brute - zombified brute with zombie tag, fast, bloodmoon buffs
+-- =============================================================================
+
+local INFECTED_BRUTE_HP     = 120
+local INFECTED_BRUTE_DAMAGE = 16
+local INFECTED_BRUTE_SPEED  = ZOMBIE_SPEED  -- same as normal zombie
+local INFECTED_BRUTE_ARMOR  = 0.4           -- 60% damage reduction
+
+-- Register brute -> infected brute mapping
+zombified_map["infectious:brute"] = "infectious:infected_brute"
+
+core.register_entity("infectious:infected_brute", {
+    initial_properties = {
+        physical = true,
+        collide_with_objects = true,
+        collisionbox = {-0.5, 0, -0.5, 0.5, 2.7, 0.5},
+        selectionbox = {-0.5, 0, -0.5, 0.5, 2.7, 0.5},
+        visual = "mesh",
+        mesh = "character.b3d",
+        visual_size = {x = 1.5, y = 1.5, z = 1.5},
+        textures = {"infectious_infected_brute.png"},
+        makes_footstep_sound = true,
+        glow = 5,
+        stepheight = 1.1,
+    },
+
+    -- Zombie tagged: won't be attacked by other zombies, won't be re-infected
+    _zombie_tag = ZOMBIE_TAG,
+    _hp = INFECTED_BRUTE_HP,
+    _target = nil,
+    _attack_timer = 0,
+    _retarget_timer = 0,
+    _sound_timer = 0,
+    _anim = "",
+    _roam_timer = 0,
+    _roam_dir = nil,
+
+    on_activate = function(self, staticdata)
+        self.object:set_acceleration({x = 0, y = -9.81, z = 0})
+        self.object:set_armor_groups({fleshy = 0, immortal = 1})
+        register_zombie(self)
+        self._hp = INFECTED_BRUTE_HP
+        if staticdata and staticdata ~= "" then
+            local data = core.deserialize(staticdata)
+            if data and data.hp then
+                self._hp = data.hp
+            end
+        end
+    end,
+
+    on_step = function(self, dtime)
+        -- Uses zombie_ai_step but with brute stats + bloodmoon buffs
+        local base_damage = INFECTED_BRUTE_DAMAGE
+        local base_speed = INFECTED_BRUTE_SPEED
+        local damage = base_damage * get_damage_mult()
+        local speed = base_speed * get_speed_mult()
+
+        local pos = self.object:get_pos()
+        if not pos then return end
+
+        if (self._hp or 1) <= 0 then
+            zombie_die(self)
+            return
+        end
+
+        -- Entity cramming
+        if not self._cram_timer then self._cram_timer = 0 end
+        self._cram_timer = self._cram_timer + dtime
+        if self._cram_timer >= 1.0 then
+            self._cram_timer = 0
+            local cramped = 0
+            for _, obj in ipairs(core.get_objects_inside_radius(pos, 2)) do
+                if obj ~= self.object and is_zombie(obj) then
+                    cramped = cramped + 1
+                end
+            end
+            if cramped >= 8 then
+                self._hp = self._hp - 2
+                if self._hp <= 0 then zombie_die(self); return end
+            end
+        end
+
+        -- Despawn far from players
+        if not self._despawn_timer then self._despawn_timer = 0 end
+        self._despawn_timer = self._despawn_timer + dtime
+        if self._despawn_timer >= 5.0 then
+            self._despawn_timer = 0
+            local nearest = 999
+            for _, player in ipairs(core.get_connected_players()) do
+                local ppos = player:get_pos()
+                if ppos then
+                    local d = vector.distance(pos, ppos)
+                    if d < nearest then nearest = d end
+                end
+            end
+            if nearest > 120 then
+                unregister_zombie(self)
+                self.object:remove()
+                return
+            end
+        end
+
+        -- Ground stomp particles
+        if not self._step_timer then self._step_timer = 0 end
+        self._step_timer = self._step_timer + dtime
+        local vel = self.object:get_velocity()
+        if vel and self._step_timer >= 0.3 then
+            local hspeed = math.sqrt(vel.x * vel.x + vel.z * vel.z)
+            if hspeed > 0.5 then
+                self._step_timer = 0
+                core.add_particlespawner({
+                    amount = 4, time = 0.2,
+                    minpos = vector.subtract(pos, {x = 0.3, y = 0, z = 0.3}),
+                    maxpos = vector.add(pos, {x = 0.3, y = 0.2, z = 0.3}),
+                    minvel = {x = -0.5, y = 0.3, z = -0.5},
+                    maxvel = {x = 0.5, y = 0.8, z = 0.5},
+                    minexptime = 0.3, maxexptime = 0.6,
+                    minsize = 0.5, maxsize = 1.0,
+                    texture = "default_dirt.png^[colorize:#200808A0",
+                    glow = 3,
+                })
+            end
+        end
+
+        -- Sounds
+        self._sound_timer = (self._sound_timer or 0) + dtime
+        if self._sound_timer >= 3 + math.random() * 3 then
+            self._sound_timer = 0
+            core.sound_play("default_dig_cracky", {
+                pos = pos, gain = 0.6, max_hear_distance = 24,
+            }, true)
+        end
+
+        -- Retarget: only find new target if current one is gone
+        self._retarget_timer = (self._retarget_timer or 0) + dtime
+        if self._retarget_timer >= 1.0 then
+            self._retarget_timer = 0
+            local cur = self._target
+            if not cur or not cur:get_pos() then
+                self._target = find_target(self)
+            else
+                local d = vector.distance(pos, cur:get_pos())
+                if d > ZOMBIE_RANGE * 1.5 then
+                    self._target = find_target(self)
+                end
+            end
+        end
+
+        local target = self._target
+        if not target then
+            self.object:set_velocity({x = 0, y = vel and vel.y or 0, z = 0})
+            self:_set_anim("stand")
+            return
+        end
+
+        local tpos = target:get_pos()
+        if not tpos then
+            self._target_lost_frames = (self._target_lost_frames or 0) + 1
+            if self._target_lost_frames > 10 then
+                self._target = nil
+                self._target_lost_frames = 0
+            end
+            return
+        end
+        self._target_lost_frames = 0
+
+        local dist = vector.distance(pos, tpos)
+
+        self._attack_timer = (self._attack_timer or 0) + dtime
+
+        if dist <= BRUTE_ATTACK_DIST then
+            self:_set_anim("walk")
+            local dir = vector.direction(pos, tpos)
+            self.object:set_yaw(math.atan2(-dir.x, dir.z))
+
+            if self._attack_timer >= 1.2 then
+                self._attack_timer = 0
+
+                -- Area damage
+                local aoe_radius = 4
+                for _, obj in ipairs(core.get_objects_inside_radius(pos, aoe_radius)) do
+                    if obj ~= self.object and not is_zombie(obj) then
+                        local opos = obj:get_pos()
+                        if opos then
+                            local kb = vector.direction(pos, opos)
+                            kb.y = 0.3
+                            obj:punch(self.object, 1.0, {
+                                full_punch_interval = 1.2,
+                                damage_groups = {fleshy = damage},
+                            }, kb)
+                        end
+                    end
+                end
+
+                -- Infection on hit
+                for _, obj in ipairs(core.get_objects_inside_radius(pos, aoe_radius)) do
+                    if obj ~= self.object and not obj:is_player() and not is_zombie(obj) then
+                        try_infect(obj)
+                    end
+                end
+
+                -- Slam particles
+                core.add_particlespawner({
+                    amount = 20, time = 0.2,
+                    minpos = vector.subtract(pos, {x = aoe_radius, y = 0, z = aoe_radius}),
+                    maxpos = vector.add(pos, {x = aoe_radius, y = 0.5, z = aoe_radius}),
+                    minvel = {x = -2, y = 1, z = -2},
+                    maxvel = {x = 2, y = 3, z = 2},
+                    minacc = {x = 0, y = -9, z = 0},
+                    maxacc = {x = 0, y = -5, z = 0},
+                    minexptime = 0.3, maxexptime = 0.8,
+                    minsize = 0.5, maxsize = 1.5,
+                    texture = "default_dirt.png^[colorize:#200808A0",
+                    glow = 3,
+                })
+
+                core.sound_play("default_dig_cracky", {
+                    pos = pos, gain = 1.0, max_hear_distance = 30,
+                }, true)
+
+                -- Cancel any knockback applied to us
+                core.after(0.05, function()
+                    if self.object and self.object:get_pos() then
+                        local v = self.object:get_velocity()
+                        if v then
+                            self.object:set_velocity({x = 0, y = v.y, z = 0})
+                        end
+                    end
+                end)
+            end
+        else
+            self:_set_anim("walk")
+            move_toward(self, tpos, speed)
+        end
+    end,
+
+    on_punch = function(self, puncher, time_from_last_punch, tool_capabilities, dir, damage)
+        if puncher and puncher:get_pos() then
+            if puncher:is_player() then
+                if not core.is_creative_enabled(puncher:get_player_name()) then
+                    self._target = puncher
+                end
+            else
+                self._target = puncher
+            end
+        end
+
+        local dmg = 1
+        if tool_capabilities and tool_capabilities.damage_groups then
+            dmg = tool_capabilities.damage_groups.fleshy or 1
+        end
+        -- 60% damage reduction, 95% during bloodmoon
+        local armor_mult = INFECTED_BRUTE_ARMOR
+        if bloodmoon and bloodmoon.is_active and bloodmoon.is_active() then
+            armor_mult = 0.05
+        end
+        dmg = math.max(1, math.floor(dmg * armor_mult))
+        self._hp = self._hp - dmg
+
+        self.object:set_texture_mod("^[colorize:#ff000040")
+
+        -- Cancel knockback
+        core.after(0.05, function()
+            if self.object and self.object:get_pos() then
+                local v = self.object:get_velocity()
+                if v then
+                    self.object:set_velocity({x = 0, y = v.y, z = 0})
+                end
+            end
+        end)
+
+        if self._hp <= 0 then
+            zombie_die(self)
+        else
+            core.after(0.15, function()
+                if self.object and self.object:get_pos() then
+                    self.object:set_texture_mod("")
+                end
+            end)
+        end
+    end,
+
+    _set_anim = function(self, name)
+        if self._anim == name then return end
+        self._anim = name
+        if name == "stand" then
+            self.object:set_animation({x = 0, y = 79}, 10, 0, true)
+        elseif name == "walk" then
+            self.object:set_animation({x = 200, y = 219}, 18, 0, true)
+        end
+    end,
+
+    get_staticdata = function(self)
+        return core.serialize({hp = self._hp})
+    end,
+})
+
+-- Infected brute spawn egg
+local function spawn_infected_brute_at(itemstack, user, pointed_thing)
+    if pointed_thing.type == "node" then
+        local pos = pointed_thing.above
+        pos.y = pos.y + 0.5
+        local obj = core.add_entity(pos, "infectious:infected_brute")
+        if obj then
+            obj:set_yaw(math.random() * math.pi * 2)
+        end
+        if not core.is_creative_enabled(user:get_player_name()) then
+            itemstack:take_item()
+        end
+        return itemstack
+    end
+end
+
+core.register_craftitem("infectious:infected_brute_spawn_egg", {
+    description = S("Infected Brute Spawn Egg"),
+    inventory_image = "infectious_infected_brute_egg.png",
+    on_use = spawn_infected_brute_at,
+    on_place = spawn_infected_brute_at,
+    on_secondary_use = spawn_infected_brute_at,
+})
+
+-- =============================================================================
 -- Spawn egg
 -- =============================================================================
 
@@ -837,8 +1553,6 @@ local SPAWN_MAX_DIST     = 60       -- maximum distance from player
 local SPAWN_ATTEMPTS     = 8        -- random positions to try per player
 local SPAWN_PACK_MIN     = 1        -- minimum pack size
 local SPAWN_PACK_MAX     = 3        -- maximum pack size
-local SPAWN_MOB_CAP      = 10       -- max zombies within 50 blocks of player
-
 local spawn_timer = 0
 
 core.register_globalstep(function(dtime)
@@ -854,16 +1568,6 @@ core.register_globalstep(function(dtime)
     for _, player in ipairs(core.get_connected_players()) do
         local ppos = player:get_pos()
         if not ppos then goto continue end
-
-        -- Check mob cap around player
-        local nearby = core.get_objects_inside_radius(ppos, 50)
-        local zombie_count = 0
-        for _, obj in ipairs(nearby) do
-            if is_zombie(obj) then
-                zombie_count = zombie_count + 1
-            end
-        end
-        if zombie_count >= SPAWN_MOB_CAP then goto continue end
 
         -- Try random positions around the player
         for _ = 1, SPAWN_ATTEMPTS do
@@ -907,17 +1611,19 @@ core.register_globalstep(function(dtime)
                 end
                 local pack_size = math.random(SPAWN_PACK_MIN, pack_max)
                 for i = 1, pack_size do
-                    if zombie_count >= SPAWN_MOB_CAP then break end
-
                     local offset = {
                         x = spawn_pos.x + math.random(-2, 2),
                         y = spawn_pos.y,
                         z = spawn_pos.z + math.random(-2, 2),
                     }
-                    local obj = core.add_entity(offset, "infectious:zombie")
+                    -- 1 in 15 chance to spawn a brute instead
+                    local mob_name = "infectious:zombie"
+                    if math.random(1, 15) == 1 then
+                        mob_name = "infectious:brute"
+                    end
+                    local obj = core.add_entity(offset, mob_name)
                     if obj then
                         obj:set_yaw(math.random() * math.pi * 2)
-                        zombie_count = zombie_count + 1
                     end
                 end
                 break  -- one successful pack per player per cycle
@@ -925,6 +1631,511 @@ core.register_globalstep(function(dtime)
         end
 
         ::continue::
+    end
+end)
+
+-- =============================================================================
+-- Trident Bosses: 5 elemental bosses that drop tridents
+-- =============================================================================
+
+local BOSS_DEFINITIONS = {
+    {
+        name = "infectious:boss_fire",
+        desc = "Inferno Titan",
+        texture = "infectious_boss_fire.png",
+        egg_texture = "infectious_boss_fire_egg.png",
+        hp = 600,
+        damage = 21,
+        armor = 0.75,
+        drop = "tridents:fire_trident",
+        scale = 4.0,
+        glow = 8,
+    },
+    {
+        name = "infectious:boss_lightning",
+        desc = "Storm Colossus",
+        texture = "infectious_boss_lightning.png",
+        egg_texture = "infectious_boss_lightning_egg.png",
+        hp = 540,
+        damage = 24,
+        armor = 0.725,
+        drop = "tridents:lightning_trident",
+        scale = 4.0,
+        glow = 10,
+    },
+    {
+        name = "infectious:boss_wither",
+        desc = "Void Reaper",
+        texture = "infectious_boss_wither.png",
+        egg_texture = "infectious_boss_wither_egg.png",
+        hp = 200,
+        damage = 27,
+        armor = 1.0,        -- no damage reduction
+        drop = "tridents:wither_trident",
+        scale = 1.0,
+        glow = 8,
+        speed_override = ZOMBIE_SPEED * 2,    -- as fast as bloodmoon zombies
+        attack_speed_override = 0.4,           -- very fast attacks
+        single_target = true,                  -- no area damage
+    },
+    {
+        name = "infectious:boss_support",
+        desc = "Life Warden",
+        texture = "infectious_boss_support.png",
+        egg_texture = "infectious_boss_support_egg.png",
+        hp = 750,
+        damage = 15,
+        armor = 0.675,
+        drop = "tridents:support_trident",
+        scale = 4.0,
+        glow = 7,
+    },
+}
+
+for _, boss in ipairs(BOSS_DEFINITIONS) do
+    local b = boss  -- capture for closures
+
+    -- Make boss immune to infection
+    zombified_map[b.name] = nil
+
+    core.register_entity(b.name, {
+        initial_properties = {
+            physical = true,
+            collide_with_objects = true,
+            collisionbox = {-0.5 * b.scale, 0, -0.5 * b.scale,
+                             0.5 * b.scale, 1.8 * b.scale, 0.5 * b.scale},
+            selectionbox = {-0.5 * b.scale, 0, -0.5 * b.scale,
+                             0.5 * b.scale, 1.8 * b.scale, 0.5 * b.scale},
+            visual = "mesh",
+            mesh = "character.b3d",
+            visual_size = {x = b.scale, y = b.scale, z = b.scale},
+            textures = {b.texture},
+            makes_footstep_sound = true,
+            glow = b.glow,
+            stepheight = 1.1,
+        },
+
+        _hp = b.hp,
+        _target = nil,
+        _attack_timer = 0,
+        _retarget_timer = 0,
+        _sound_timer = 0,
+        _anim = "",
+        _roam_timer = 0,
+        _roam_dir = nil,
+
+        on_activate = function(self, staticdata)
+            self.object:set_acceleration({x = 0, y = -9.81, z = 0})
+            self.object:set_armor_groups({fleshy = 0, immortal = 1})
+            register_zombie(self)
+            self._hp = b.hp
+            if staticdata and staticdata ~= "" then
+                local data = core.deserialize(staticdata)
+                if data and data.hp then
+                    self._hp = data.hp
+                end
+            end
+        end,
+
+        on_step = function(self, dtime)
+            local pos = self.object:get_pos()
+            if not pos then return end
+
+            if (self._hp or 1) <= 0 then
+                -- Boss death: drop trident + big particle explosion
+                if pos then
+                    core.add_particlespawner({
+                        amount = 40, time = 0.5,
+                        minpos = vector.subtract(pos, 1),
+                        maxpos = vector.add(pos, {x = 1, y = 3, z = 1}),
+                        minvel = {x = -3, y = 1, z = -3},
+                        maxvel = {x = 3, y = 5, z = 3},
+                        minacc = {x = 0, y = -3, z = 0},
+                        maxacc = {x = 0, y = -1, z = 0},
+                        minexptime = 1, maxexptime = 3,
+                        minsize = 1, maxsize = 3,
+                        texture = "default_dirt.png^[colorize:#FFAA00FF",
+                        glow = 14,
+                    })
+                    core.add_particlespawner({
+                        amount = 20, time = 0.3,
+                        minpos = vector.subtract(pos, 0.5),
+                        maxpos = vector.add(pos, {x = 0.5, y = 2, z = 0.5}),
+                        minvel = {x = -1, y = 2, z = -1},
+                        maxvel = {x = 1, y = 4, z = 1},
+                        minexptime = 0.5, maxexptime = 1.5,
+                        minsize = 2, maxsize = 5,
+                        texture = "default_dirt.png^[colorize:#FFFFFF80",
+                        glow = 14,
+                    })
+                    core.sound_play("default_break_glass", {
+                        pos = pos, gain = 1.5, max_hear_distance = 50,
+                    }, true)
+                    -- Drop the trident
+                    core.add_item(pos, b.drop)
+                    -- Also drop diamonds
+                    core.add_item(pos, "default:diamond " .. math.random(2, 5))
+                    -- Announce
+                    for _, player in ipairs(core.get_connected_players()) do
+                        core.chat_send_player(player:get_player_name(),
+                            core.colorize("#ffd700", b.desc .. " has been slain!"))
+                    end
+                end
+                unregister_zombie(self)
+
+                self.object:remove()
+                return
+            end
+
+            -- Despawn far from players
+            if not self._despawn_timer then self._despawn_timer = 0 end
+            self._despawn_timer = self._despawn_timer + dtime
+            if self._despawn_timer >= 5.0 then
+                self._despawn_timer = 0
+                local nearest = 999
+                for _, player in ipairs(core.get_connected_players()) do
+                    local ppos = player:get_pos()
+                    if ppos then
+                        local d = vector.distance(pos, ppos)
+                        if d < nearest then nearest = d end
+                    end
+                end
+                if nearest > 120 then
+                    unregister_zombie(self)
+    
+                    self.object:remove()
+                    return
+                end
+            end
+
+            -- Stomp particles
+            if not self._step_timer then self._step_timer = 0 end
+            self._step_timer = self._step_timer + dtime
+            local vel = self.object:get_velocity()
+            if vel and self._step_timer >= 0.3 then
+                local hspeed = math.sqrt(vel.x * vel.x + vel.z * vel.z)
+                if hspeed > 0.5 then
+                    self._step_timer = 0
+                    core.add_particlespawner({
+                        amount = 5, time = 0.2,
+                        minpos = vector.subtract(pos, {x = 0.5, y = 0, z = 0.5}),
+                        maxpos = vector.add(pos, {x = 0.5, y = 0.3, z = 0.5}),
+                        minvel = {x = -0.5, y = 0.3, z = -0.5},
+                        maxvel = {x = 0.5, y = 1, z = 0.5},
+                        minexptime = 0.3, maxexptime = 0.6,
+                        minsize = 0.5, maxsize = 1.0,
+                        texture = "default_dirt.png", glow = 0,
+                    })
+                end
+            end
+
+            -- Sounds
+            self._sound_timer = (self._sound_timer or 0) + dtime
+            if self._sound_timer >= 4 + math.random() * 3 then
+                self._sound_timer = 0
+                core.sound_play("default_dig_cracky", {
+                    pos = pos, gain = 0.7, max_hear_distance = 30,
+                }, true)
+            end
+
+            -- Target: players only (non-creative)
+            self._retarget_timer = (self._retarget_timer or 0) + dtime
+            if self._retarget_timer >= 1.5 then
+                self._retarget_timer = 0
+                if not self._target or not self._target:get_pos() then
+                    self._target = nil
+                    local best = nil
+                    local best_dist = ZOMBIE_RANGE
+                    for _, player in ipairs(core.get_connected_players()) do
+                        if not core.is_creative_enabled(player:get_player_name()) then
+                            local ppos = player:get_pos()
+                            if ppos then
+                                local d = vector.distance(pos, ppos)
+                                if d < best_dist then
+                                    best_dist = d
+                                    best = player
+                                end
+                            end
+                        end
+                    end
+                    self._target = best
+                end
+            end
+
+            local target = self._target
+            if not target then
+                -- Roaming
+                self._roam_timer = (self._roam_timer or 0) + dtime
+                if self._roam_timer >= 3 + math.random() * 4 then
+                    self._roam_timer = 0
+                    if math.random(1, 3) == 1 then
+                        self._roam_dir = nil
+                    else
+                        local angle = math.random() * math.pi * 2
+                        self._roam_dir = {x = math.cos(angle), y = 0, z = math.sin(angle)}
+                    end
+                end
+                local vy = vel and vel.y or 0
+                if self._roam_dir then
+                    self:_set_anim("walk")
+                    self.object:set_velocity({
+                        x = self._roam_dir.x * 1.5,
+                        y = vy,
+                        z = self._roam_dir.z * 1.5,
+                    })
+                    self.object:set_yaw(math.atan2(-self._roam_dir.x, self._roam_dir.z))
+                else
+                    self.object:set_velocity({x = 0, y = vy, z = 0})
+                    self:_set_anim("stand")
+                end
+                return
+            end
+
+            local tpos = target:get_pos()
+            if not tpos then self._target = nil; return end
+            local dist = vector.distance(pos, tpos)
+            if dist > ZOMBIE_RANGE * 1.5 then self._target = nil; return end
+
+            self._attack_timer = (self._attack_timer or 0) + dtime
+
+            local boss_attack_speed = b.attack_speed_override or 1.2
+            local boss_move_speed = b.speed_override or 3.0
+            local boss_aoe = (b.scale >= 2) and 5 or 3
+
+            if dist <= 3.5 then
+                self:_set_anim("walk")
+                local dir = vector.direction(pos, tpos)
+                self.object:set_yaw(math.atan2(-dir.x, dir.z))
+
+                if self._attack_timer >= boss_attack_speed then
+                    self._attack_timer = 0
+
+                    if b.single_target then
+                        -- Single target attack (Void Reaper)
+                        local kb = vector.direction(pos, tpos)
+                        kb.y = 0.3
+                        target:punch(self.object, 1.0, {
+                            full_punch_interval = boss_attack_speed,
+                            damage_groups = {fleshy = b.damage},
+                        }, kb)
+                        if b.name == "infectious:boss_wither" then
+                            apply_void_wither(target)
+                        end
+                    else
+                        -- Area damage with knockback
+                        for _, obj in ipairs(core.get_objects_inside_radius(pos, boss_aoe)) do
+                            if obj ~= self.object then
+                                local opos = obj:get_pos()
+                                if opos then
+                                    local kb = vector.direction(pos, opos)
+                                    kb.y = 0.3
+                                    obj:punch(self.object, 1.0, {
+                                        full_punch_interval = boss_attack_speed,
+                                        damage_groups = {fleshy = b.damage},
+                                    }, kb)
+                                end
+                            end
+                        end
+                    end
+                    -- Slam particles
+                    core.add_particlespawner({
+                        amount = 15, time = 0.2,
+                        minpos = vector.subtract(pos, {x = boss_aoe, y = 0, z = boss_aoe}),
+                        maxpos = vector.add(pos, {x = boss_aoe, y = 0.5, z = boss_aoe}),
+                        minvel = {x = -2, y = 1, z = -2},
+                        maxvel = {x = 2, y = 3, z = 2},
+                        minacc = {x = 0, y = -9, z = 0},
+                        maxacc = {x = 0, y = -5, z = 0},
+                        minexptime = 0.3, maxexptime = 0.8,
+                        minsize = 0.5, maxsize = 1.5,
+                        texture = "default_dirt.png", glow = 0,
+                    })
+                    core.sound_play("default_dig_cracky", {
+                        pos = pos, gain = 1.0, max_hear_distance = 30,
+                    }, true)
+                end
+            else
+                self:_set_anim("walk")
+                move_toward(self, tpos, boss_move_speed)
+            end
+        end,
+
+        on_punch = function(self, puncher, time_from_last_punch, tool_capabilities, dir, damage)
+            if puncher and puncher:get_pos() then
+                if puncher:is_player() then
+                    if not core.is_creative_enabled(puncher:get_player_name()) then
+                        self._target = puncher
+                    end
+                else
+                    self._target = puncher
+                end
+            end
+            local dmg = 1
+            if tool_capabilities and tool_capabilities.damage_groups then
+                dmg = tool_capabilities.damage_groups.fleshy or 1
+            end
+            dmg = math.max(1, math.floor(dmg * b.armor))
+            self._hp = self._hp - dmg
+            self.object:set_texture_mod("^[colorize:#ff000040")
+            -- No knockback
+            core.after(0.05, function()
+                if self.object and self.object:get_pos() then
+                    local v = self.object:get_velocity()
+                    if v then
+                        self.object:set_velocity({x = 0, y = v.y, z = 0})
+                    end
+                end
+            end)
+            if self._hp > 0 then
+                core.after(0.15, function()
+                    if self.object and self.object:get_pos() then
+                        self.object:set_texture_mod("")
+                    end
+                end)
+            end
+        end,
+
+        _set_anim = function(self, name)
+            if self._anim == name then return end
+            self._anim = name
+            if name == "stand" then
+                self.object:set_animation({x = 0, y = 79}, 10, 0, true)
+            elseif name == "walk" then
+                self.object:set_animation({x = 200, y = 219}, 15, 0, true)
+            end
+        end,
+
+        get_staticdata = function(self)
+            return core.serialize({hp = self._hp})
+        end,
+    })
+
+    -- Boss immune to infection
+    zombified_map[b.name] = b.name
+
+    -- Spawn egg
+    local function spawn_boss(itemstack, user, pointed_thing)
+        if pointed_thing.type == "node" then
+            local pos = pointed_thing.above
+            pos.y = pos.y + 0.5
+            local obj = core.add_entity(pos, b.name)
+            if obj then
+                obj:set_yaw(math.random() * math.pi * 2)
+                -- Announce to players within 128 blocks
+                for _, p in ipairs(core.get_connected_players()) do
+                    local pp = p:get_pos()
+                    if pp and vector.distance(pos, pp) <= 128 then
+                        core.chat_send_player(p:get_player_name(),
+                            core.colorize("#ff4444", b.desc .. " has appeared nearby!"))
+                    end
+                end
+            end
+            if not core.is_creative_enabled(user:get_player_name()) then
+                itemstack:take_item()
+            end
+            return itemstack
+        end
+    end
+
+    core.register_craftitem(b.name .. "_spawn_egg", {
+        description = S(b.desc .. " Spawn Egg"),
+        inventory_image = b.egg_texture,
+        on_use = spawn_boss,
+        on_place = spawn_boss,
+        on_secondary_use = spawn_boss,
+    })
+end
+
+-- =============================================================================
+-- Boss natural spawning (rare, any light level)
+-- =============================================================================
+
+local boss_spawn_timer = 0  -- starts at 0, first check after full 120 seconds
+core.register_globalstep(function(dtime)
+    boss_spawn_timer = boss_spawn_timer + dtime
+    if boss_spawn_timer < 120 then return end
+    boss_spawn_timer = 0
+
+    for _, player in ipairs(core.get_connected_players()) do
+        local ppos = player:get_pos()
+        if not ppos then goto boss_continue end
+
+        -- Check if a boss already exists within 200 blocks
+        local boss_nearby = false
+        for _, obj in ipairs(core.get_objects_inside_radius(ppos, 200)) do
+            local ent = obj:get_luaentity()
+            if ent then
+                for _, b in ipairs(BOSS_DEFINITIONS) do
+                    if ent.name == b.name then
+                        boss_nearby = true
+                        break
+                    end
+                end
+            end
+            if boss_nearby then break end
+        end
+        if boss_nearby then goto boss_continue end
+
+        -- 1 in 50 chance per player per check
+        if math.random(1, 50) ~= 1 then goto boss_continue end
+
+        local angle = math.random() * math.pi * 2
+        local dist = 40 + math.random() * 40
+        local try_pos = {
+            x = math.floor(ppos.x + math.cos(angle) * dist),
+            y = math.floor(ppos.y),
+            z = math.floor(ppos.z + math.sin(angle) * dist),
+        }
+
+        for dy = -10, 10 do
+            local ground = {x = try_pos.x, y = try_pos.y + dy, z = try_pos.z}
+            local gnode = core.get_node(ground)
+            local gdef = core.registered_nodes[gnode.name]
+            if gdef and gdef.walkable then
+                local above1 = {x = ground.x, y = ground.y + 1, z = ground.z}
+                local above2 = {x = ground.x, y = ground.y + 2, z = ground.z}
+                local above3 = {x = ground.x, y = ground.y + 3, z = ground.z}
+                if core.get_node(above1).name == "air"
+                        and core.get_node(above2).name == "air"
+                        and core.get_node(above3).name == "air" then
+                    -- Build weighted boss list
+                    -- Void Reaper: 2x weight at night, 3x during bloodmoon
+                    local boss_pool = {}
+                    local tod = core.get_timeofday()
+                    local is_night = tod < 0.23 or tod > 0.77
+                    local is_bloodmoon = bloodmoon and bloodmoon.is_active and bloodmoon.is_active()
+                    for _, bd in ipairs(BOSS_DEFINITIONS) do
+                        local weight = 1
+                        if bd.name == "infectious:boss_wither" then
+                            if is_bloodmoon then
+                                weight = 3
+                            elseif is_night then
+                                weight = 2
+                            end
+                        end
+                        for _ = 1, weight do
+                            table.insert(boss_pool, bd)
+                        end
+                    end
+                    local boss = boss_pool[math.random(1, #boss_pool)]
+                    local obj = core.add_entity(above1, boss.name)
+                    if obj then
+                        obj:set_yaw(math.random() * math.pi * 2)
+                        -- Announce to players within 128 blocks
+                        for _, p in ipairs(core.get_connected_players()) do
+                            local pp = p:get_pos()
+                            if pp and vector.distance(above1, pp) <= 128 then
+                                core.chat_send_player(p:get_player_name(),
+                                    core.colorize("#ff4444", boss.desc .. " has appeared nearby!"))
+                            end
+                        end
+                    end
+                    break
+                end
+            end
+        end
+
+        ::boss_continue::
     end
 end)
 
