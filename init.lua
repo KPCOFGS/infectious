@@ -91,17 +91,21 @@ local function find_target(self)
     local pos = self.object:get_pos()
     if not pos then return nil end
 
+    local blacklist = self._blacklist or {}
     local best_target = nil
     local best_dist = ZOMBIE_RANGE
 
     for _, player in ipairs(core.get_connected_players()) do
         if not core.is_creative_enabled(player:get_player_name()) then
-            local ppos = player:get_pos()
-            if ppos then
-                local dist = vector.distance(pos, ppos)
-                if dist < best_dist then
-                    best_dist = dist
-                    best_target = player
+            local key = player:get_player_name()
+            if not blacklist[key] then
+                local ppos = player:get_pos()
+                if ppos then
+                    local dist = vector.distance(pos, ppos)
+                    if dist < best_dist then
+                        best_dist = dist
+                        best_target = player
+                    end
                 end
             end
         end
@@ -112,12 +116,15 @@ local function find_target(self)
             local ent = obj:get_luaentity()
             if ent and ent.name ~= "__builtin:item"
                     and ent.name ~= "__builtin:falling_node" then
-                local opos = obj:get_pos()
-                if opos then
-                    local dist = vector.distance(pos, opos)
-                    if dist < best_dist then
-                        best_dist = dist
-                        best_target = obj
+                local key = tostring(obj)
+                if not blacklist[key] then
+                    local opos = obj:get_pos()
+                    if opos then
+                        local dist = vector.distance(pos, opos)
+                        if dist < best_dist then
+                            best_dist = dist
+                            best_target = obj
+                        end
                     end
                 end
             end
@@ -192,9 +199,26 @@ local function move_toward(self, target_pos, speed)
             self._path = path
             self._path_index = 1
             self._stuck_count = 0
+            self._nopath_count = 0
         else
-            -- No path found: clear path, will use direct movement
+            -- No path found
             self._path = nil
+            self._nopath_count = (self._nopath_count or 0) + 1
+
+            -- After 5 failed path attempts, blacklist current target for 30 seconds
+            if self._nopath_count >= 5 and self._target then
+                local key
+                if self._target:is_player() then
+                    key = self._target:get_player_name()
+                else
+                    key = tostring(self._target)
+                end
+                if self._blacklist then
+                    self._blacklist[key] = core.get_gametime() + 30
+                end
+                self._target = nil
+                self._nopath_count = 0
+            end
         end
     end
 
@@ -204,7 +228,17 @@ local function move_toward(self, target_pos, speed)
         if horiz_moved < 0.3 then
             self._stuck_count = (self._stuck_count or 0) + 1
             if self._stuck_count >= 3 then
-                -- Really stuck: force path recalc and try jumping
+                -- Really stuck: blacklist target and move on
+                if self._target and self._blacklist then
+                    local key
+                    if self._target:is_player() then
+                        key = self._target:get_player_name()
+                    else
+                        key = tostring(self._target)
+                    end
+                    self._blacklist[key] = core.get_gametime() + 30
+                    self._target = nil
+                end
                 self._path = nil
                 self._stuck_count = 0
                 new_y = ZOMBIE_JUMP_HEIGHT
@@ -382,8 +416,76 @@ local function zombie_die(self)
         }, true)
 
     end
+    unregister_zombie(self)
     self.object:remove()
 end
+
+-- =============================================================================
+-- Chunk-based mob cap: max zombies per 16x16x16 mapblock
+-- =============================================================================
+
+local CHUNK_MOB_CAP = 8
+local all_zombies = {}
+
+local function register_zombie(self)
+    all_zombies[tostring(self.object)] = self
+end
+
+local function unregister_zombie(self)
+    all_zombies[tostring(self.object)] = nil
+end
+
+local function pos_to_chunk(pos)
+    return math.floor(pos.x / 16) .. ":" ..
+           math.floor(pos.y / 16) .. ":" ..
+           math.floor(pos.z / 16)
+end
+
+local cull_timer = 0
+core.register_globalstep(function(dtime)
+    cull_timer = cull_timer + dtime
+    if cull_timer < 10 then return end
+    cull_timer = 0
+
+    -- Clean dead refs
+    for key, z in pairs(all_zombies) do
+        if not z.object or not z.object:get_pos() then
+            all_zombies[key] = nil
+        end
+    end
+
+    -- Group zombies by chunk
+    local chunks = {}
+    for key, z in pairs(all_zombies) do
+        local zpos = z.object:get_pos()
+        if zpos then
+            local chunk = pos_to_chunk(zpos)
+            if not chunks[chunk] then chunks[chunk] = {} end
+            table.insert(chunks[chunk], {key = key, zombie = z})
+        end
+    end
+
+    -- Cull randomly in overpopulated chunks
+    for chunk, list in pairs(chunks) do
+        if #list > CHUNK_MOB_CAP then
+            -- Shuffle the list
+            for i = #list, 2, -1 do
+                local j = math.random(1, i)
+                list[i], list[j] = list[j], list[i]
+            end
+            -- Remove excess
+            for i = CHUNK_MOB_CAP + 1, #list do
+                local entry = list[i]
+                if entry.zombie.object and entry.zombie.object:get_pos() then
+                    entry.zombie.object:remove()
+                    all_zombies[entry.key] = nil
+                end
+            end
+        end
+    end
+end)
+
+-- =============================================================================
 
 local function zombie_ai_step(self, dtime, base_damage, base_speed)
     local damage = base_damage * get_damage_mult()
@@ -397,11 +499,65 @@ local function zombie_ai_step(self, dtime, base_damage, base_speed)
         return
     end
 
+    -- Entity cramming: if too many zombies in 2-block radius, take damage
+    if not self._cram_timer then self._cram_timer = 0 end
+    self._cram_timer = self._cram_timer + dtime
+    if self._cram_timer >= 1.0 then
+        self._cram_timer = 0
+        local cramped = 0
+        for _, obj in ipairs(core.get_objects_inside_radius(pos, 2)) do
+            if obj ~= self.object and is_zombie(obj) then
+                cramped = cramped + 1
+            end
+        end
+        if cramped >= 8 then
+            -- Suffocation damage from cramming
+            self._hp = self._hp - 2
+            if self._hp <= 0 then
+                zombie_die(self)
+                return
+            end
+        end
+    end
+
+    -- Despawn if too far from all players (120+ blocks)
+    if not self._despawn_timer then self._despawn_timer = 0 end
+    self._despawn_timer = self._despawn_timer + dtime
+    if self._despawn_timer >= 5.0 then
+        self._despawn_timer = 0
+        local nearest_player_dist = 999
+        for _, player in ipairs(core.get_connected_players()) do
+            local ppos = player:get_pos()
+            if ppos then
+                local d = vector.distance(pos, ppos)
+                if d < nearest_player_dist then
+                    nearest_player_dist = d
+                end
+            end
+        end
+        if nearest_player_dist > 120 then
+            self.object:remove()
+            return
+        end
+    end
+
+    -- Blacklist tracking: targets we can't reach
+    if not self._blacklist then self._blacklist = {} end
+    if not self._nopath_count then self._nopath_count = 0 end
+
     -- Retarget
     self._retarget_timer = (self._retarget_timer or 0) + dtime
     if self._retarget_timer >= 1.0 then
         self._retarget_timer = 0
         self._target = find_target(self)
+    end
+
+    -- Clean expired blacklist entries
+    local now = core.get_gametime()
+    for key, expire_time in pairs(self._blacklist) do
+        if now > expire_time then
+            self._blacklist[key] = nil
+        end
     end
 
     -- Sounds
@@ -491,6 +647,7 @@ core.register_entity("infectious:zombie", {
     on_activate = function(self, staticdata)
         self.object:set_acceleration({x = 0, y = -9.81, z = 0})
         self.object:set_armor_groups({fleshy = 0, immortal = 1})
+        register_zombie(self)
         self._hp = ZOMBIE_HP
         if staticdata and staticdata ~= "" then
             local data = core.deserialize(staticdata)
@@ -584,6 +741,7 @@ for _, mob in ipairs(ANIMALIA_MOBS) do
         on_activate = function(self, staticdata)
             self.object:set_acceleration({x = 0, y = -9.81, z = 0})
             self.object:set_armor_groups({fleshy = 0, immortal = 1})
+            register_zombie(self)
             self._hp = INFECTED_HP
             if staticdata and staticdata ~= "" then
                 local data = core.deserialize(staticdata)
