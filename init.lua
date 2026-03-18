@@ -355,6 +355,21 @@ local function try_infect(target)
 end
 
 -- =============================================================================
+-- Chunk-based mob cap: max zombies per 16x16x16 mapblock
+-- =============================================================================
+
+local CHUNK_MOB_CAP = 8
+local all_zombies = {}
+
+local function register_zombie(self)
+    all_zombies[tostring(self.object)] = self
+end
+
+local function unregister_zombie(self)
+    all_zombies[tostring(self.object)] = nil
+end
+
+-- =============================================================================
 -- Common zombie AI step (shared by humanoid zombie and animal zombies)
 -- =============================================================================
 
@@ -418,21 +433,6 @@ local function zombie_die(self)
     end
     unregister_zombie(self)
     self.object:remove()
-end
-
--- =============================================================================
--- Chunk-based mob cap: max zombies per 16x16x16 mapblock
--- =============================================================================
-
-local CHUNK_MOB_CAP = 8
-local all_zombies = {}
-
-local function register_zombie(self)
-    all_zombies[tostring(self.object)] = self
-end
-
-local function unregister_zombie(self)
-    all_zombies[tostring(self.object)] = nil
 end
 
 local function pos_to_chunk(pos)
