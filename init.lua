@@ -214,7 +214,7 @@ local function move_toward(self, target_pos, speed)
                     key = tostring(self._target)
                 end
                 if self._blacklist then
-                    self._blacklist[key] = core.get_gametime() + 30
+                    self._blacklist[key] = core.get_gametime() + 10
                 end
                 self._target = nil
                 self._nopath_count = 0
@@ -236,7 +236,7 @@ local function move_toward(self, target_pos, speed)
                     else
                         key = tostring(self._target)
                     end
-                    self._blacklist[key] = core.get_gametime() + 30
+                    self._blacklist[key] = core.get_gametime() + 10
                     self._target = nil
                 end
                 self._path = nil
