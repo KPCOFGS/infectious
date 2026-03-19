@@ -31,10 +31,27 @@ Bosses drop elemental tridents. They spawn naturally (rare) at any light level, 
 
 | Boss | HP | Damage | Armor | Size | Speed | Drop |
 |------|-----|--------|-------|------|-------|------|
-| **Inferno Titan** | 600 | 21 | 25% | 4x | Normal | Fire Trident |
+| **Inferno Titan** | 600 | 21 | 60% | 4x | Very slow | Fire Trident |
 | **Storm Colossus** | 540 | 24 | 27.5% | 4x | Normal | Lightning Trident |
 | **Void Reaper** | 200 | 27 | None | 1x | Very fast | Wither Trident |
 | **Life Warden** | 750 | 15 | 32.5% | 4x | Normal | Support Trident |
+
+### Inferno Titan
+- Obsidian and magma skin with glowing cracks and fire eyes
+- 4x player size, very slow (1.5 speed) but massive reach (7 blocks) and area damage (10 blocks)
+- **Fire immune** — burn DOT is always cleansed
+- **Passive fire aura** — damages all nearby entities on a timer with fire particles
+- **4-phase enrage system** as HP drops:
+
+| Phase | HP % | Armor | Speed | Damage | Attack Speed | Reach | AOE | Aura |
+|-------|------|-------|-------|--------|-------------|-------|-----|------|
+| 1 | 100-76% | 60% | 1.5 | 21 | 1.2s | 7 | 10 | 5 dmg / 5 blocks / 4s |
+| 2 | 75-51% | 75% | 1.5 | 21 | 1.2s | 7 | 10 | 10 dmg / 10 blocks / 3s |
+| 3 | 50-26% | 85% | 3.0 | 31 | 0.8s | 10 | 15 | 15 dmg / 15 blocks / 2s |
+| 4 | 25-0% | 90% | 4.5 | 47 | 0.53s | 15 | 20 | 20 dmg / 20 blocks / 1s |
+
+- **Wither immune** below 75% HP
+- Attacks set targets on fire with burst particles
 
 ### Void Reaper
 - Player-sized, black body with purple energy veins and white glowing eyes
@@ -46,7 +63,7 @@ Bosses drop elemental tridents. They spawn naturally (rare) at any light level, 
 - Spawn rate doubled at night, tripled during blood moon
 
 ### Other Bosses
-- Area damage (5 block radius for large bosses, 3 for small)
+- Area damage (radius scales with boss size)
 - No knockback — they don't flinch
 - Immune to infection
 
