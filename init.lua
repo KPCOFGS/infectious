@@ -1646,10 +1646,14 @@ local BOSS_DEFINITIONS = {
         egg_texture = "infectious_boss_fire_egg.png",
         hp = 600,
         damage = 21,
-        armor = 0.75,
+        armor = 0.4,           -- 60% damage reduction default
         drop = "tridents:fire_trident",
         scale = 4.0,
-        glow = 8,
+        glow = 10,
+        reach_override = 7,    -- long melee reach
+        aoe_override = 10,     -- 10 block area damage
+        speed_override = 1.5,  -- very slow default
+        is_inferno_titan = true,
     },
     {
         name = "infectious:boss_lightning",
@@ -1898,11 +1902,90 @@ for _, boss in ipairs(BOSS_DEFINITIONS) do
 
             self._attack_timer = (self._attack_timer or 0) + dtime
 
+            -- Inferno Titan phase system
             local boss_attack_speed = b.attack_speed_override or 1.2
             local boss_move_speed = b.speed_override or 3.0
-            local boss_aoe = (b.scale >= 2) and 5 or 3
+            local boss_aoe = b.aoe_override or ((b.scale >= 2) and 5 or 3)
+            local boss_reach = b.reach_override or 3.5
+            local boss_damage = b.damage
 
-            if dist <= 3.5 then
+            if b.is_inferno_titan then
+                local hp_pct = (self._hp / b.hp)
+
+                -- Passive fire aura: constant damage to nearby entities
+                local aura_radius = 5
+                local aura_damage = 5
+                local aura_interval = 4
+                if hp_pct <= 0.25 then
+                    aura_radius = 20
+                    aura_damage = 20
+                    aura_interval = 1
+                elseif hp_pct <= 0.50 then
+                    aura_radius = 15
+                    aura_damage = 15
+                    aura_interval = 2
+                elseif hp_pct <= 0.75 then
+                    aura_radius = 10
+                    aura_damage = 10
+                    aura_interval = 3
+                end
+
+                if not self._aura_timer then self._aura_timer = 0 end
+                self._aura_timer = self._aura_timer + dtime
+                if self._aura_timer >= aura_interval then
+                    self._aura_timer = 0
+                    -- Damage all entities in aura range (normal damage, not true)
+                    for _, obj in ipairs(core.get_objects_inside_radius(pos, aura_radius)) do
+                        if obj ~= self.object then
+                            local opos = obj:get_pos()
+                            if opos then
+                                obj:punch(self.object, 1.0, {
+                                    full_punch_interval = 1.0,
+                                    damage_groups = {fleshy = aura_damage},
+                                }, nil)
+                            end
+                        end
+                    end
+                end
+
+                -- Fire aura particles (constant, scales with radius)
+                if not self._particle_timer then self._particle_timer = 0 end
+                self._particle_timer = self._particle_timer + dtime
+                if self._particle_timer >= 0.3 then
+                    self._particle_timer = 0
+                    core.add_particlespawner({
+                        amount = 6 + aura_radius, time = 0.3,
+                        minpos = vector.subtract(pos, {x = aura_radius * 0.5, y = 0, z = aura_radius * 0.5}),
+                        maxpos = vector.add(pos, {x = aura_radius * 0.5, y = 3, z = aura_radius * 0.5}),
+                        minvel = {x = -0.5, y = 0.5, z = -0.5},
+                        maxvel = {x = 0.5, y = 2.0, z = 0.5},
+                        minexptime = 0.5, maxexptime = 1.5,
+                        minsize = 1, maxsize = 2.5,
+                        texture = "default_dirt.png^[colorize:#FF6010FF",
+                        glow = 12,
+                    })
+                end
+
+                -- Phase 3: below 50% HP
+                if hp_pct <= 0.50 then
+                    boss_move_speed = 3.0
+                    boss_damage = math.floor(b.damage * 1.5)
+                    boss_attack_speed = (b.attack_speed_override or 1.2) / 1.5
+                    boss_reach = 10
+                    boss_aoe = 15
+                end
+
+                -- Phase 4: below 25% HP
+                if hp_pct <= 0.25 then
+                    boss_move_speed = 4.5
+                    boss_damage = math.floor(b.damage * 2.25)
+                    boss_attack_speed = (b.attack_speed_override or 1.2) / 2.25
+                    boss_reach = 15
+                    boss_aoe = 20
+                end
+            end
+
+            if dist <= boss_reach then
                 self:_set_anim("walk")
                 local dir = vector.direction(pos, tpos)
                 self.object:set_yaw(math.atan2(-dir.x, dir.z))
@@ -1916,7 +1999,7 @@ for _, boss in ipairs(BOSS_DEFINITIONS) do
                         kb.y = 0.3
                         target:punch(self.object, 1.0, {
                             full_punch_interval = boss_attack_speed,
-                            damage_groups = {fleshy = b.damage},
+                            damage_groups = {fleshy = boss_damage},
                         }, kb)
                         if b.name == "infectious:boss_wither" then
                             apply_void_wither(target)
@@ -1931,15 +2014,35 @@ for _, boss in ipairs(BOSS_DEFINITIONS) do
                                     kb.y = 0.3
                                     obj:punch(self.object, 1.0, {
                                         full_punch_interval = boss_attack_speed,
-                                        damage_groups = {fleshy = b.damage},
+                                        damage_groups = {fleshy = boss_damage},
                                     }, kb)
+                                    -- Inferno Titan: fire burst on hit
+                                    if b.is_inferno_titan then
+                                        local opos2 = obj:get_pos()
+                                        if opos2 then
+                                            core.add_particlespawner({
+                                                amount = 6, time = 0.3,
+                                                minpos = vector.subtract(opos2, 0.3),
+                                                maxpos = vector.add(opos2, {x = 0.3, y = 1.2, z = 0.3}),
+                                                minvel = {x = -0.5, y = 0.5, z = -0.5},
+                                                maxvel = {x = 0.5, y = 1.5, z = 0.5},
+                                                minexptime = 0.3, maxexptime = 0.8,
+                                                minsize = 1, maxsize = 2,
+                                                texture = "default_dirt.png^[colorize:#FF6010FF",
+                                                glow = 12,
+                                            })
+                                        end
+                                    end
                                 end
                             end
                         end
                     end
                     -- Slam particles
+                    local particle_tex = b.is_inferno_titan
+                        and "default_dirt.png^[colorize:#FF4010C0"
+                        or "default_dirt.png"
                     core.add_particlespawner({
-                        amount = 15, time = 0.2,
+                        amount = 20, time = 0.2,
                         minpos = vector.subtract(pos, {x = boss_aoe, y = 0, z = boss_aoe}),
                         maxpos = vector.add(pos, {x = boss_aoe, y = 0.5, z = boss_aoe}),
                         minvel = {x = -2, y = 1, z = -2},
@@ -1948,7 +2051,8 @@ for _, boss in ipairs(BOSS_DEFINITIONS) do
                         maxacc = {x = 0, y = -5, z = 0},
                         minexptime = 0.3, maxexptime = 0.8,
                         minsize = 0.5, maxsize = 1.5,
-                        texture = "default_dirt.png", glow = 0,
+                        texture = particle_tex,
+                        glow = b.is_inferno_titan and 10 or 0,
                     })
                     core.sound_play("default_dig_cracky", {
                         pos = pos, gain = 1.0, max_hear_distance = 30,
@@ -1974,7 +2078,37 @@ for _, boss in ipairs(BOSS_DEFINITIONS) do
             if tool_capabilities and tool_capabilities.damage_groups then
                 dmg = tool_capabilities.damage_groups.fleshy or 1
             end
-            dmg = math.max(1, math.floor(dmg * b.armor))
+
+            -- Inferno Titan phase-based armor
+            local armor = b.armor
+            if b.is_inferno_titan then
+                local hp_pct = (self._hp / b.hp)
+                if hp_pct <= 0.25 then
+                    armor = 0.1  -- 90% damage reduction
+                elseif hp_pct <= 0.50 then
+                    armor = 0.15 -- 85% damage reduction
+                elseif hp_pct <= 0.75 then
+                    armor = 0.25 -- 75% damage reduction
+
+                    -- Immune to wither at 75% and below
+                    local key = tostring(self.object)
+                    if void_wither_targets[key] then
+                        void_wither_targets[key] = nil
+                    end
+                end
+                -- Immune to fire damage (burn DOT)
+                local burn_key = tostring(self.object)
+                if burning_entities and burning_entities[burn_key] then
+                    burning_entities[burn_key] = nil
+                end
+                if withering_entities and withering_entities[burn_key] then
+                    if (self._hp / b.hp) <= 0.75 then
+                        withering_entities[burn_key] = nil
+                    end
+                end
+            end
+
+            dmg = math.max(1, math.floor(dmg * armor))
             self._hp = self._hp - dmg
             self.object:set_texture_mod("^[colorize:#ff000040")
             -- No knockback
