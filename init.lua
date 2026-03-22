@@ -22,6 +22,48 @@ local INFECT_CHANCE      = 0.3
 
 local SPAWN_CHANCE_NIGHT = 500
 
+-- Mod storage for boss deduplication across rejoin/restart
+local boss_storage = core.get_mod_storage()
+
+-- Track active bosses: boss_storage key "active_bosses" = serialized table of {name, pos}
+-- We also store a unique ID per boss entity so they can unregister themselves
+
+local function get_active_bosses()
+    local raw = boss_storage:get_string("active_bosses")
+    if raw == "" then return {} end
+    return core.deserialize(raw) or {}
+end
+
+local function save_active_bosses(list)
+    boss_storage:set_string("active_bosses", core.serialize(list))
+end
+
+local function register_boss_in_storage(uid, name, pos)
+    local list = get_active_bosses()
+    list[uid] = {name = name, pos = pos}
+    save_active_bosses(list)
+end
+
+local function unregister_boss_from_storage(uid)
+    local list = get_active_bosses()
+    list[uid] = nil
+    save_active_bosses(list)
+end
+
+local function update_boss_pos_in_storage(uid, pos)
+    local list = get_active_bosses()
+    if list[uid] then
+        list[uid].pos = pos
+        save_active_bosses(list)
+    end
+end
+
+local boss_uid_counter = 0
+local function generate_boss_uid()
+    boss_uid_counter = boss_uid_counter + 1
+    return tostring(core.get_us_time()) .. "_" .. boss_uid_counter
+end
+
 -- =============================================================================
 -- Void Reaper stacking wither system
 -- =============================================================================
@@ -69,7 +111,7 @@ local function apply_void_wither(target)
             maxacc = {x = 0, y = 0.5, z = 0},
             minexptime = 0.4, maxexptime = 1.0,
             minsize = 1, maxsize = 2,
-            texture = "default_dirt.png^[colorize:#6020A0FF",
+            texture = "infectious_particle.png^[colorize:#6020A0FF",
             glow = 8,
         })
     end
@@ -121,7 +163,7 @@ core.register_globalstep(function(dtime)
                         maxvel = {x = 0.3, y = 1.0, z = 0.3},
                         minexptime = 0.3, maxexptime = 0.8,
                         minsize = 1, maxsize = 2,
-                        texture = "default_dirt.png^[colorize:#6020A0FF",
+                        texture = "infectious_particle.png^[colorize:#6020A0FF",
                         glow = 6,
                     })
                 end
@@ -155,26 +197,29 @@ local ANIM_STAND     = {x = 0, y = 79}
 local ANIM_WALK      = {x = 168, y = 187}
 local ANIM_WALK_ATK  = {x = 200, y = 219}
 
--- Animalia mobs with their models and zombified textures
-local ANIMALIA_MOBS = {
-    {name = "animalia:cow",          mesh = "animalia_cow.b3d",      tex = "infectious_z_cow_1.png",         w = 0.5,  h = 1.0},
-    {name = "animalia:pig",          mesh = "animalia_pig.b3d",      tex = "infectious_z_pig_1.png",         w = 0.35, h = 0.7},
-    {name = "animalia:sheep",        mesh = "animalia_sheep.b3d",    tex = "infectious_z_sheep.png",         w = 0.4,  h = 0.8},
-    {name = "animalia:chicken",      mesh = "animalia_chicken.b3d",  tex = "infectious_z_chicken_1.png",     w = 0.25, h = 0.5},
-    {name = "animalia:wolf",         mesh = "animalia_wolf.b3d",     tex = "infectious_z_wolf_1.png",        w = 0.35, h = 0.7},
-    {name = "animalia:fox",          mesh = "animalia_fox.b3d",      tex = "infectious_z_fox_1.png",         w = 0.35, h = 0.5},
-    {name = "animalia:grizzly_bear", mesh = "animalia_bear.b3d",     tex = "infectious_z_bear_grizzly.png",  w = 0.5,  h = 1.0},
-    {name = "animalia:horse",        mesh = "animalia_horse.b3d",    tex = "infectious_z_horse_1.png",       w = 0.65, h = 1.95},
-    {name = "animalia:cat",          mesh = "animalia_cat.b3d",      tex = "infectious_z_cat_1.png",         w = 0.2,  h = 0.4},
-    {name = "animalia:turkey",       mesh = "animalia_turkey.b3d",   tex = "infectious_z_turkey_hen.png",    w = 0.3,  h = 0.6},
-    {name = "animalia:reindeer",     mesh = "animalia_reindeer.b3d", tex = "infectious_z_reindeer.png",      w = 0.45, h = 0.9},
-    {name = "animalia:opossum",      mesh = "animalia_opossum.b3d",  tex = "infectious_z_opossum.png",       w = 0.25, h = 0.4},
-    {name = "animalia:rat",          mesh = "animalia_rat.b3d",      tex = "infectious_z_rat_1.png",         w = 0.15, h = 0.3},
-    {name = "animalia:bat",          mesh = "animalia_bat.b3d",      tex = "infectious_z_bat_1.png",         w = 0.15, h = 0.3},
-    {name = "animalia:frog",         mesh = "animalia_frog.b3d",     tex = "infectious_z_tree_frog.png",     w = 0.25, h = 0.4},
-    {name = "animalia:owl",          mesh = "animalia_owl.b3d",      tex = "infectious_z_owl.png",           w = 0.15, h = 0.3},
-    {name = "animalia:song_bird",    mesh = "animalia_bird.b3d",     tex = "infectious_z_cardinal.png",      w = 0.2,  h = 0.4},
-}
+-- Animalia mobs with their models and zombified textures (only if animalia is installed)
+local ANIMALIA_MOBS = {}
+if core.get_modpath("animalia") then
+    ANIMALIA_MOBS = {
+        {name = "animalia:cow",          mesh = "animalia_cow.b3d",      tex = "infectious_z_cow_1.png",         w = 0.5,  h = 1.0},
+        {name = "animalia:pig",          mesh = "animalia_pig.b3d",      tex = "infectious_z_pig_1.png",         w = 0.35, h = 0.7},
+        {name = "animalia:sheep",        mesh = "animalia_sheep.b3d",    tex = "infectious_z_sheep.png",         w = 0.4,  h = 0.8},
+        {name = "animalia:chicken",      mesh = "animalia_chicken.b3d",  tex = "infectious_z_chicken_1.png",     w = 0.25, h = 0.5},
+        {name = "animalia:wolf",         mesh = "animalia_wolf.b3d",     tex = "infectious_z_wolf_1.png",        w = 0.35, h = 0.7},
+        {name = "animalia:fox",          mesh = "animalia_fox.b3d",      tex = "infectious_z_fox_1.png",         w = 0.35, h = 0.5},
+        {name = "animalia:grizzly_bear", mesh = "animalia_bear.b3d",     tex = "infectious_z_bear_grizzly.png",  w = 0.5,  h = 1.0},
+        {name = "animalia:horse",        mesh = "animalia_horse.b3d",    tex = "infectious_z_horse_1.png",       w = 0.65, h = 1.95},
+        {name = "animalia:cat",          mesh = "animalia_cat.b3d",      tex = "infectious_z_cat_1.png",         w = 0.2,  h = 0.4},
+        {name = "animalia:turkey",       mesh = "animalia_turkey.b3d",   tex = "infectious_z_turkey_hen.png",    w = 0.3,  h = 0.6},
+        {name = "animalia:reindeer",     mesh = "animalia_reindeer.b3d", tex = "infectious_z_reindeer.png",      w = 0.45, h = 0.9},
+        {name = "animalia:opossum",      mesh = "animalia_opossum.b3d",  tex = "infectious_z_opossum.png",       w = 0.25, h = 0.4},
+        {name = "animalia:rat",          mesh = "animalia_rat.b3d",      tex = "infectious_z_rat_1.png",         w = 0.15, h = 0.3},
+        {name = "animalia:bat",          mesh = "animalia_bat.b3d",      tex = "infectious_z_bat_1.png",         w = 0.15, h = 0.3},
+        {name = "animalia:frog",         mesh = "animalia_frog.b3d",     tex = "infectious_z_tree_frog.png",     w = 0.25, h = 0.4},
+        {name = "animalia:owl",          mesh = "animalia_owl.b3d",      tex = "infectious_z_owl.png",           w = 0.15, h = 0.3},
+        {name = "animalia:song_bird",    mesh = "animalia_bird.b3d",     tex = "infectious_z_cardinal.png",      w = 0.2,  h = 0.4},
+    }
+end
 
 -- Map animalia entity name -> zombified entity name
 local zombified_map = {}
@@ -308,22 +353,49 @@ end
 -- Infect: replace animalia mob with zombified version
 -- =============================================================================
 
-local function try_infect(target)
+local function is_entity_dead(obj)
+    if not obj or not obj:get_pos() then return true end
+    local ent = obj:get_luaentity()
+    if ent then
+        -- Custom HP systems (infectious, other mods)
+        if ent._hp and ent._hp <= 0 then return true end
+        -- Creatura/animalia HP
+        if ent.hp and ent.hp <= 0 then return true end
+    end
+    -- Engine HP (non-player entities)
+    if not obj:is_player() then
+        local hp = obj:get_hp()
+        if hp and hp <= 0 then return true end
+    end
+    return false
+end
+
+-- saved_info is an optional table {pos, name, yaw} captured before the punch
+local function try_infect(target, saved_info)
     if not target or target:is_player() then return false end
     if is_zombie(target) then return false end
-    if math.random() > INFECT_CHANCE then return false end
+    -- Only infect on kill
+    if not is_entity_dead(target) then return false end
 
+    -- Get entity name: from live entity or saved info
     local ent = target:get_luaentity()
-    if not ent then return false end
+    local ent_name = (ent and ent.name) or (saved_info and saved_info.name)
+    if not ent_name then return false end
+
+    -- Morph allies are immune to infection
+    if ent_name == "morph:ally" then return false end
 
     -- Infected brutes can't be re-infected
-    if ent.name == "infectious:infected_brute" then return false end
+    if ent_name == "infectious:infected_brute" then return false end
 
-    local pos = target:get_pos()
+    -- Use saved position (entity may already be removed on death)
+    local pos = (saved_info and saved_info.pos) or target:get_pos()
     if not pos then return false end
 
+    local yaw = (saved_info and saved_info.yaw) or (target.get_yaw and target:get_yaw()) or 0
+
     -- Check if this mob type has a zombified version
-    local zombie_name = zombified_map[ent.name]
+    local zombie_name = zombified_map[ent_name]
     if not zombie_name then
         -- Generic infection: just spawn a regular zombie
         zombie_name = "infectious:zombie"
@@ -331,7 +403,7 @@ local function try_infect(target)
 
     local infected = core.add_entity(pos, zombie_name)
     if infected then
-        infected:set_yaw(target:get_yaw() or 0)
+        infected:set_yaw(yaw)
         core.add_particlespawner({
             amount = 20,
             time = 0.5,
@@ -343,13 +415,16 @@ local function try_infect(target)
             maxexptime = 1.0,
             minsize = 1,
             maxsize = 3,
-            texture = "default_dirt.png^[colorize:#200808A0",
+            texture = "infectious_particle.png^[colorize:#200808A0",
             glow = 5,
         })
-        core.log("action", "[infectious] " .. ent.name .. " was zombified!")
+        core.log("action", "[infectious] " .. ent_name .. " was zombified!")
     end
 
-    target:remove()
+    -- Remove if still around
+    if target:get_pos() then
+        target:remove()
+    end
     return true
 end
 
@@ -388,7 +463,7 @@ local function zombie_die(self)
             maxexptime = 2.0,
             minsize = 0.5,
             maxsize = 1.5,
-            texture = "default_dirt.png^[colorize:#200505FF",
+            texture = "infectious_particle.png^[colorize:#200505FF",
             glow = 4,
         })
         -- Blood splatter
@@ -405,7 +480,7 @@ local function zombie_die(self)
             maxexptime = 0.8,
             minsize = 0.3,
             maxsize = 0.8,
-            texture = "default_dirt.png^[colorize:#8B0000FF",
+            texture = "infectious_particle.png^[colorize:#8B0000FF",
             glow = 2,
         })
         -- Red flash
@@ -420,7 +495,7 @@ local function zombie_die(self)
             maxexptime = 0.3,
             minsize = 2,
             maxsize = 3,
-            texture = "default_dirt.png^[colorize:#FF0000A0",
+            texture = "infectious_particle.png^[colorize:#FF0000A0",
             glow = 14,
         })
         -- Death sound
@@ -545,6 +620,14 @@ local function zombie_ai_step(self, dtime, base_damage, base_speed)
         if self._attack_timer >= 0.8 then
             self._attack_timer = 0
 
+            -- Capture target info before punch (entity may remove itself on death)
+            local tent = target:get_luaentity()
+            local target_info = {
+                pos = {x = tpos.x, y = tpos.y, z = tpos.z},
+                name = tent and tent.name,
+                yaw = target:get_yaw(),
+            }
+
             -- Punch with direction so target gets knocked back
             local attack_dir = vector.direction(pos, tpos)
             attack_dir.y = 0.3
@@ -554,7 +637,7 @@ local function zombie_ai_step(self, dtime, base_damage, base_speed)
             }, attack_dir)
 
             if not target:is_player() then
-                try_infect(target)
+                try_infect(target, target_info)
             end
 
             -- Cancel any knockback applied to US (not the target)
@@ -814,7 +897,7 @@ core.register_tool("infectious:brute_mace", {
                         maxexptime = 0.6,
                         minsize = 0.5,
                         maxsize = 1.0,
-                        texture = "default_dirt.png",
+                        texture = "infectious_particle.png",
                         glow = 0,
                     })
                 end
@@ -920,7 +1003,7 @@ core.register_entity("infectious:brute", {
                     maxexptime = 0.6,
                     minsize = 0.5,
                     maxsize = 1.0,
-                    texture = "default_dirt.png",
+                    texture = "infectious_particle.png",
                     glow = 0,
                 })
             end
@@ -1052,7 +1135,7 @@ core.register_entity("infectious:brute", {
                     maxexptime = 0.8,
                     minsize = 0.5,
                     maxsize = 1.5,
-                    texture = "default_dirt.png",
+                    texture = "infectious_particle.png",
                     glow = 0,
                 })
 
@@ -1126,7 +1209,7 @@ core.register_entity("infectious:brute", {
                 maxexptime = 2.0,
                 minsize = 0.5,
                 maxsize = 1.5,
-                texture = "default_dirt.png^[colorize:#30251FFF",
+                texture = "infectious_particle.png^[colorize:#30251FFF",
                 glow = 2,
             })
 
@@ -1135,16 +1218,18 @@ core.register_entity("infectious:brute", {
             }, true)
 
             -- Drops: rare mace, chance for armor
-            -- Always drop some iron
-            core.add_item(pos, "default:steel_ingot " .. math.random(1, 3))
+            -- Always drop some iron (if available)
+            if core.registered_items["default:steel_ingot"] then
+                core.add_item(pos, "default:steel_ingot " .. math.random(1, 3))
+            end
 
             -- 1 in 10: drop the brute mace
             if math.random(1, 10) == 1 then
                 core.add_item(pos, "infectious:brute_mace")
             end
 
-            -- 1 in 10: drop diamond
-            if math.random(1, 10) == 1 then
+            -- 1 in 10: drop diamond (if available)
+            if math.random(1, 10) == 1 and core.registered_items["default:diamond"] then
                 core.add_item(pos, "default:diamond " .. math.random(1, 2))
             end
         end
@@ -1313,7 +1398,7 @@ core.register_entity("infectious:infected_brute", {
                     maxvel = {x = 0.5, y = 0.8, z = 0.5},
                     minexptime = 0.3, maxexptime = 0.6,
                     minsize = 0.5, maxsize = 1.0,
-                    texture = "default_dirt.png^[colorize:#200808A0",
+                    texture = "infectious_particle.png^[colorize:#200808A0",
                     glow = 3,
                 })
             end
@@ -1373,12 +1458,22 @@ core.register_entity("infectious:infected_brute", {
             if self._attack_timer >= 1.2 then
                 self._attack_timer = 0
 
-                -- Area damage
+                -- Area damage (capture info before punching)
                 local aoe_radius = 4
+                local hit_targets = {}
                 for _, obj in ipairs(core.get_objects_inside_radius(pos, aoe_radius)) do
                     if obj ~= self.object and not is_zombie(obj) then
                         local opos = obj:get_pos()
                         if opos then
+                            local oent = obj:get_luaentity()
+                            table.insert(hit_targets, {
+                                obj = obj,
+                                info = {
+                                    pos = {x = opos.x, y = opos.y, z = opos.z},
+                                    name = oent and oent.name,
+                                    yaw = obj:get_yaw(),
+                                },
+                            })
                             local kb = vector.direction(pos, opos)
                             kb.y = 0.3
                             obj:punch(self.object, 1.0, {
@@ -1389,10 +1484,10 @@ core.register_entity("infectious:infected_brute", {
                     end
                 end
 
-                -- Infection on hit
-                for _, obj in ipairs(core.get_objects_inside_radius(pos, aoe_radius)) do
-                    if obj ~= self.object and not obj:is_player() and not is_zombie(obj) then
-                        try_infect(obj)
+                -- Infection on kill
+                for _, ht in ipairs(hit_targets) do
+                    if not ht.obj:is_player() and not is_zombie(ht.obj) then
+                        try_infect(ht.obj, ht.info)
                     end
                 end
 
@@ -1407,7 +1502,7 @@ core.register_entity("infectious:infected_brute", {
                     maxacc = {x = 0, y = -5, z = 0},
                     minexptime = 0.3, maxexptime = 0.8,
                     minsize = 0.5, maxsize = 1.5,
-                    texture = "default_dirt.png^[colorize:#200808A0",
+                    texture = "infectious_particle.png^[colorize:#200808A0",
                     glow = 3,
                 })
 
@@ -1728,6 +1823,8 @@ for _, boss in ipairs(BOSS_DEFINITIONS) do
         _roam_timer = 0,
         _roam_dir = nil,
 
+        _zombie_tag = ZOMBIE_TAG,
+
         on_activate = function(self, staticdata)
             self.object:set_acceleration({x = 0, y = -9.81, z = 0})
             self.object:set_armor_groups({fleshy = 0, immortal = 1})
@@ -1738,7 +1835,17 @@ for _, boss in ipairs(BOSS_DEFINITIONS) do
                 if data and data.hp then
                     self._hp = data.hp
                 end
+                if data and data.boss_uid then
+                    self._boss_uid = data.boss_uid
+                end
             end
+            -- Assign a UID if this is a freshly spawned boss (no staticdata UID)
+            if not self._boss_uid then
+                self._boss_uid = generate_boss_uid()
+            end
+            -- Register in persistent storage
+            local pos = self.object:get_pos()
+            register_boss_in_storage(self._boss_uid, b.name, pos)
         end,
 
         on_step = function(self, dtime)
@@ -1758,7 +1865,7 @@ for _, boss in ipairs(BOSS_DEFINITIONS) do
                         maxacc = {x = 0, y = -1, z = 0},
                         minexptime = 1, maxexptime = 3,
                         minsize = 1, maxsize = 3,
-                        texture = "default_dirt.png^[colorize:#FFAA00FF",
+                        texture = "infectious_particle.png^[colorize:#FFAA00FF",
                         glow = 14,
                     })
                     core.add_particlespawner({
@@ -1769,16 +1876,20 @@ for _, boss in ipairs(BOSS_DEFINITIONS) do
                         maxvel = {x = 1, y = 4, z = 1},
                         minexptime = 0.5, maxexptime = 1.5,
                         minsize = 2, maxsize = 5,
-                        texture = "default_dirt.png^[colorize:#FFFFFF80",
+                        texture = "infectious_particle.png^[colorize:#FFFFFF80",
                         glow = 14,
                     })
                     core.sound_play("default_break_glass", {
                         pos = pos, gain = 1.5, max_hear_distance = 50,
                     }, true)
-                    -- Drop the trident
-                    core.add_item(pos, b.drop)
-                    -- Also drop diamonds
-                    core.add_item(pos, "default:diamond " .. math.random(2, 5))
+                    -- Drop the trident (if tridents mod is present)
+                    if b.drop and core.registered_items[b.drop] then
+                        core.add_item(pos, b.drop)
+                    end
+                    -- Also drop diamonds (if available)
+                    if core.registered_items["default:diamond"] then
+                        core.add_item(pos, "default:diamond " .. math.random(2, 5))
+                    end
                     -- Announce
                     for _, player in ipairs(core.get_connected_players()) do
                         core.chat_send_player(player:get_player_name(),
@@ -1786,6 +1897,7 @@ for _, boss in ipairs(BOSS_DEFINITIONS) do
                     end
                 end
                 unregister_zombie(self)
+                unregister_boss_from_storage(self._boss_uid)
 
                 self.object:remove()
                 return
@@ -1796,6 +1908,8 @@ for _, boss in ipairs(BOSS_DEFINITIONS) do
             self._despawn_timer = self._despawn_timer + dtime
             if self._despawn_timer >= 5.0 then
                 self._despawn_timer = 0
+                -- Update position in persistent storage
+                update_boss_pos_in_storage(self._boss_uid, pos)
                 local nearest = 999
                 for _, player in ipairs(core.get_connected_players()) do
                     local ppos = player:get_pos()
@@ -1806,7 +1920,8 @@ for _, boss in ipairs(BOSS_DEFINITIONS) do
                 end
                 if nearest > 120 then
                     unregister_zombie(self)
-    
+                    unregister_boss_from_storage(self._boss_uid)
+
                     self.object:remove()
                     return
                 end
@@ -1828,7 +1943,7 @@ for _, boss in ipairs(BOSS_DEFINITIONS) do
                         maxvel = {x = 0.5, y = 1, z = 0.5},
                         minexptime = 0.3, maxexptime = 0.6,
                         minsize = 0.5, maxsize = 1.0,
-                        texture = "default_dirt.png", glow = 0,
+                        texture = "infectious_particle.png", glow = 0,
                     })
                 end
             end
@@ -1961,7 +2076,7 @@ for _, boss in ipairs(BOSS_DEFINITIONS) do
                         maxvel = {x = 0.5, y = 2.0, z = 0.5},
                         minexptime = 0.5, maxexptime = 1.5,
                         minsize = 1, maxsize = 2.5,
-                        texture = "default_dirt.png^[colorize:#FF6010FF",
+                        texture = "infectious_particle.png^[colorize:#FF6010FF",
                         glow = 12,
                     })
                 end
@@ -2028,7 +2143,7 @@ for _, boss in ipairs(BOSS_DEFINITIONS) do
                                                 maxvel = {x = 0.5, y = 1.5, z = 0.5},
                                                 minexptime = 0.3, maxexptime = 0.8,
                                                 minsize = 1, maxsize = 2,
-                                                texture = "default_dirt.png^[colorize:#FF6010FF",
+                                                texture = "infectious_particle.png^[colorize:#FF6010FF",
                                                 glow = 12,
                                             })
                                         end
@@ -2039,8 +2154,8 @@ for _, boss in ipairs(BOSS_DEFINITIONS) do
                     end
                     -- Slam particles
                     local particle_tex = b.is_inferno_titan
-                        and "default_dirt.png^[colorize:#FF4010C0"
-                        or "default_dirt.png"
+                        and "infectious_particle.png^[colorize:#FF4010C0"
+                        or "infectious_particle.png"
                     core.add_particlespawner({
                         amount = 20, time = 0.2,
                         minpos = vector.subtract(pos, {x = boss_aoe, y = 0, z = boss_aoe}),
@@ -2140,12 +2255,12 @@ for _, boss in ipairs(BOSS_DEFINITIONS) do
         end,
 
         get_staticdata = function(self)
-            return core.serialize({hp = self._hp})
+            return core.serialize({hp = self._hp, boss_uid = self._boss_uid})
         end,
     })
 
-    -- Boss immune to infection
-    zombified_map[b.name] = b.name
+    -- Boss immune to infection (nil = not in zombified_map = skip infection)
+    zombified_map[b.name] = nil
 
     -- Spawn egg
     local function spawn_boss(itemstack, user, pointed_thing)
@@ -2194,19 +2309,14 @@ core.register_globalstep(function(dtime)
         local ppos = player:get_pos()
         if not ppos then goto boss_continue end
 
-        -- Check if a boss already exists within 200 blocks
+        -- Check if a boss already exists within 200 blocks (using persistent storage)
         local boss_nearby = false
-        for _, obj in ipairs(core.get_objects_inside_radius(ppos, 200)) do
-            local ent = obj:get_luaentity()
-            if ent then
-                for _, b in ipairs(BOSS_DEFINITIONS) do
-                    if ent.name == b.name then
-                        boss_nearby = true
-                        break
-                    end
-                end
+        local active_bosses = get_active_bosses()
+        for _, bdata in pairs(active_bosses) do
+            if bdata.pos and vector.distance(ppos, bdata.pos) <= 200 then
+                boss_nearby = true
+                break
             end
-            if boss_nearby then break end
         end
         if boss_nearby then goto boss_continue end
 

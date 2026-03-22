@@ -1,33 +1,33 @@
 # Infectious
 
-Apocalyptic zombie mod for Luanti. Aggressive zombies roam the night, infect animalia mobs on contact, and spread the horde. Includes bosses, brutes, and blood moon integration.
+Apocalyptic zombie mod for Luanti. Aggressive zombies roam the world, infect mobs upon killing them, and spread the horde. Includes bosses, brutes, and blood moon integration. Works on any game — all dependencies are optional.
 
 ![screenshot1](./docs/demo.png)
 
 ## Zombies
 
 - **Humanoid zombie** — dark, bloody player model. Fast, aggressive, attacks everything
-- **17 zombified animals** — every animalia mob has an infected variant with darkened textures and red eyes
-- **Infection** — 30% chance on each hit to zombify the target mob
+- **Zombified animals** — every animalia mob has an infected variant with darkened textures and red eyes (requires animalia)
+- **Infection on kill** — when a zombie kills a mob, it rises as a new zombie (or its zombified variant if animalia is installed)
 - **Night/dark spawning** — spawn where light level is 7 or lower, in packs of 1-3
 - **Sunlight immune** — don't burn in daylight once spawned
-- **Minecraft-style spawning** — spawns around players, despawns at 120+ blocks
+- **Despawn** — spawns around players, despawns at 120+ blocks
 
 ## Brute
 
 - **80 HP**, 40% damage reduction, 12 damage with area sweep
 - 1.5x player-sized with steel armor and amber eyes
 - Not zombie-tagged — zombies will attack it, it fights back
-- **Can be infected** — becomes an Infected Brute (120 HP, 16 damage, zombie speed, 60% armor, 95% during blood moon)
+- **Can be infected** — when killed by a zombie, becomes an Infected Brute (120 HP, 16 damage, zombie speed, 60% armor, 95% during blood moon)
 - Rare natural spawn (1 in 15 chance instead of zombie)
-- Drops steel ingots, rare brute mace (1 in 10), diamonds
+- Drops steel ingots, rare brute mace (1 in 10), diamonds (requires `default` mod for item drops)
 
 ### Brute Mace (dropped weapon)
 - 10 damage, area damage on hit, 150 durability
 
 ## Bosses
 
-Bosses drop elemental tridents. They spawn naturally (rare) at any light level, and announce their presence to players within 128 blocks.
+Bosses drop elemental tridents (requires `tridents` mod). They spawn naturally (rare) at any light level, and announce their presence to players within 128 blocks. Boss existence is tracked via mod storage to prevent duplication across rejoin/restart.
 
 | Boss | HP | Damage | Armor | Size | Speed | Drop |
 |------|-----|--------|-------|------|-------|------|
@@ -91,10 +91,11 @@ Creative mode players are ignored by zombies — useful for testing.
 
 ## Dependencies
 
-- `default` (Minetest Game)
-- `animalia` (animal mobs)
-- `creatura` (mob framework)
-- `tridents` (for boss drops)
+All dependencies are optional. The mod works standalone on any game.
+
+- `default` — enables brute item drops (steel ingots, diamonds) and boss diamond drops
+- `animalia` + `creatura` — enables zombified animal variants (17 species)
+- `tridents` — enables boss trident drops
 
 ## License
 
